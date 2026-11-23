@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show MethodCall;
 import 'package:flutter/widgets.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:photo_manager/photo_manager.dart';
 
 import '../../../domain/interfaces.dart';
@@ -14,6 +15,7 @@ import '../domain/image_kind_classifier.dart';
 import '../domain/permission_mapping.dart';
 import '../domain/thumbnail_geometry.dart';
 import 'byte_lru_cache.dart';
+import 'gallery_cache_sweeper.dart';
 
 /// [GalleryRepository] backed by Android MediaStore through photo_manager.
 ///
@@ -29,8 +31,17 @@ class PhotoManagerGalleryRepository implements GalleryRepository {
     int thumbnailCacheBytes = 30 * 1024 * 1024,
     this.changeDebounce = const Duration(milliseconds: 500),
     int maxConcurrentDecodes = 6,
+    StartupCacheSweep? startupSweep,
   })  : _thumbs = ByteLruCache<String>(maxBytes: thumbnailCacheBytes),
-        _decodePool = _Pool(maxConcurrentDecodes);
+        _decodePool = _Pool(maxConcurrentDecodes),
+        _startupSweep = startupSweep ?? galleryStartupSweep {
+    // The repository is created at app start (indexing): clear copies of
+    // user images left in the cache by an earlier process (QA-08/QA-09).
+    unawaited(_startupSweep.ensure());
+  }
+
+  final StartupCacheSweep _startupSweep;
+  ScopedCopyTracker? _copies;
 
   /// Quiet period after the last MediaStore notification before [changes]
   /// emits (a burst of new screenshots / a camera save produces many).
@@ -309,8 +320,13 @@ class PhotoManagerGalleryRepository implements GalleryRepository {
     try {
       final entity = await _entity(id);
       if (entity == null) return null;
+      await _startupSweep.ensure();
       final file = await entity.file;
       if (file == null || !await file.exists()) return null;
+      // Android 10 without legacy storage: photo_manager copies the original
+      // into cache/pm_*. Keep only the most recent copies.
+      _copies ??= ScopedCopyTracker(cacheDirPath: (await getTemporaryDirectory()).path);
+      await _copies!.handedOut(file.path);
       return file;
     } catch (_) {
       return null;

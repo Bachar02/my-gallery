@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:ai_gallery/domain/interfaces.dart';
 import 'package:ai_gallery/domain/models.dart';
 import 'package:ai_gallery/features/gallery/data/android_image_actions.dart';
+import 'package:ai_gallery/features/gallery/data/gallery_cache_sweeper.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -41,12 +42,14 @@ GalleryImage _image({String? mime = 'image/heic'}) => GalleryImage(
       kind: ImageKind.photo,
     );
 
+final _noSweep = StartupCacheSweep(() async => Directory.systemTemp.createTempSync('noop'));
+
 void main() {
   test('shares the original file with its MIME type and name', () async {
     final share = _FakeShare();
     final actions = AndroidImageActions(
       _FakeGallery(file: File('/storage/emulated/0/DCIM/Camera/IMG_1.HEIC')),
-      shareSheet: share.share,
+      shareSheet: share.share, startupSweep: _noSweep,
     );
     await actions.share(_image());
     final params = share.shared.single;
@@ -59,7 +62,7 @@ void main() {
     final share = _FakeShare();
     final actions = AndroidImageActions(
       _FakeGallery(file: File('/x/y/shot.png')),
-      shareSheet: share.share,
+      shareSheet: share.share, startupSweep: _noSweep,
     );
     await actions.share(_image(mime: null));
     expect(share.shared.single.files!.single.mimeType, 'image/png');
@@ -67,7 +70,7 @@ void main() {
 
   test('throws when the image is gone entirely', () async {
     final share = _FakeShare();
-    final actions = AndroidImageActions(_FakeGallery(), shareSheet: share.share);
+    final actions = AndroidImageActions(_FakeGallery(), shareSheet: share.share, startupSweep: _noSweep);
     await expectLater(actions.share(_image()), throwsStateError);
     expect(share.shared, isEmpty);
   });

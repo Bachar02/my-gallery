@@ -27,3 +27,8 @@
 }
 # The Flutter engine references Play Core (deferred components), which is unused.
 -dontwarn com.google.android.play.core.**
+
+# ---- Glide (photo_manager) -----------------------------------------------------
+# QuietGlideModule is created reflectively from the manifest meta-data.
+-keep public class * implements com.bumptech.glide.module.GlideModule
+-keep class com.bachar02.ai_gallery.QuietGlideModule { *; }

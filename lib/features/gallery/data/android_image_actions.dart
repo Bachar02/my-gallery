@@ -7,6 +7,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../../domain/interfaces.dart';
 import '../../../domain/models.dart';
+import 'gallery_cache_sweeper.dart';
 
 /// [ImageActions] using the Android share sheet (share_plus).
 ///
@@ -19,7 +20,11 @@ class AndroidImageActions implements ImageActions {
     this._gallery, {
     Future<ShareResult> Function(ShareParams params)? shareSheet,
     this.fallbackMaxSide = 2048,
-  }) : _shareSheet = shareSheet ?? SharePlus.instance.share;
+    StartupCacheSweep? startupSweep,
+  })  : _shareSheet = shareSheet ?? SharePlus.instance.share,
+        _startupSweep = startupSweep ?? galleryStartupSweep;
+
+  final StartupCacheSweep _startupSweep;
 
   final GalleryRepository _gallery;
   final Future<ShareResult> Function(ShareParams params) _shareSheet;
@@ -28,6 +33,9 @@ class AndroidImageActions implements ImageActions {
   /// Throws [StateError] when the image no longer exists at all.
   @override
   Future<void> share(GalleryImage image) async {
+    // Copies left by an earlier process (share_export, share_plus) are
+    // removed once per process before anything new is shared (QA-09).
+    await _startupSweep.ensure();
     final file = await _gallery.originalFile(image.id);
     if (file != null) {
       await _shareSheet(ShareParams(

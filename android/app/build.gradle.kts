@@ -72,6 +72,13 @@ android {
     }
 }
 
+dependencies {
+    // Compile against the Glide that photo_manager already ships (same
+    // version, so nothing new is packaged) for the release-only
+    // QuietGlideModule.
+    releaseCompileOnly("com.github.bumptech.glide:glide:4.16.0")
+}
+
 kotlin {
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17

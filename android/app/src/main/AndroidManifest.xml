@@ -32,7 +32,11 @@
 
     <!-- Backups are disabled: the search index holds OCR text of private
          screenshots and must never leave the device (cloud backup or
-         device-to-device transfer). -->
+         device-to-device transfer).
+         requestLegacyExternalStorage only has an effect on Android 10 (API 29;
+         ignored from API 30 with targetSdk >= 30). There it lets photo_manager
+         return the real MediaStore file path instead of copying every original
+         into the app cache (QA-08). Read access is still READ_EXTERNAL_STORAGE. -->
     <application
         android:label="AI Gallery"
         android:name="${applicationName}"
@@ -41,6 +45,7 @@
         android:allowBackup="false"
         android:fullBackupContent="@xml/backup_rules"
         android:dataExtractionRules="@xml/data_extraction_rules"
+        android:requestLegacyExternalStorage="true"
         tools:replace="android:allowBackup,android:label">
         <activity
             android:name=".MainActivity"
