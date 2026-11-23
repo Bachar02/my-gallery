@@ -75,7 +75,8 @@ class _AppGateState extends ConsumerState<AppGate> with WidgetsBindingObserver {
     if (ref.read(galleryPermissionProvider).value?.canBrowse ?? false) _startIndexing();
   }
 
-  void _startIndexing() => unawaited(ref.read(indexingActionsProvider).start());
+  /// Respects a deleted index ('indexing.disabled' = '1').
+  void _startIndexing() => unawaited(ref.read(indexingActionsProvider).autoStart());
 
   @override
   Widget build(BuildContext context) {

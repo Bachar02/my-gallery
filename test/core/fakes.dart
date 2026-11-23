@@ -159,6 +159,20 @@ class FakeIndexStore implements IndexStore {
   @override
   Future<void> clearRecentSearches() async => recent = [];
 
+  final settings = <String, String>{};
+
+  @override
+  Future<String?> getSetting(String key) async => settings[key];
+
+  @override
+  Future<void> setSetting(String key, String? value) async {
+    if (value == null) {
+      settings.remove(key);
+    } else {
+      settings[key] = value;
+    }
+  }
+
   @override
   noSuchMethod(Invocation invocation) => throw UnimplementedError('${invocation.memberName} not faked');
 }

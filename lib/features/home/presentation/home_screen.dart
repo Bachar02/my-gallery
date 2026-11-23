@@ -125,6 +125,7 @@ class HomeIndexingStatus extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final progress = ref.watch(indexingProgressProvider);
     final stats = ref.watch(indexStatsProvider).value;
+    final deleted = ref.watch(indexingDisabledProvider).value ?? false;
 
     if (progress.hasError && !progress.hasValue) {
       return IndexingStatusCard(
@@ -142,7 +143,7 @@ class HomeIndexingStatus extends ConsumerWidget {
     if (value == null) return const IndexingStatusCardSkeleton();
 
     return IndexingStatusCard(
-      view: IndexingStatusView.from(value, stats),
+      view: IndexingStatusView.from(value, stats, indexDeleted: deleted),
       onAction: (action) => handleStatusAction(context, ref, action),
     );
   }
@@ -159,11 +160,13 @@ Future<void> handleStatusAction(BuildContext context, WidgetRef ref, StatusActio
       actions.pause();
     case StatusAction.resume:
       actions.resume();
+    case StatusAction.rebuild:
+      unawaited(actions.rebuild());
     case StatusAction.allowAccess:
       final messenger = ScaffoldMessenger.of(context);
       try {
         final result = await ref.read(galleryPermissionProvider.notifier).request();
-        if (result.canBrowse) unawaited(actions.start());
+        if (result.canBrowse) unawaited(actions.autoStart());
       } catch (_) {
         messenger.showSnackBar(const SnackBar(content: Text('Couldn’t request photo access. Please try again.')));
       }
@@ -220,7 +223,7 @@ Future<void> manageLimitedSelection(BuildContext context, WidgetRef ref) async {
   try {
     await ref.read(galleryPermissionProvider.notifier).manageLimitedSelection();
     await ref.read(galleryPermissionProvider.notifier).refresh();
-    unawaited(actions.start());
+    unawaited(actions.autoStart());
   } catch (_) {
     messenger.showSnackBar(const SnackBar(content: Text('Couldn’t open the photo picker. Please try again.')));
   }

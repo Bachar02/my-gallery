@@ -76,4 +76,22 @@ void main() {
     await settle(tester);
     expect(find.byType(HomeScreen), findsOneWidget);
   });
+
+  testWidgets('deleted index is not re-indexed on start or resume', (tester) async {
+    final env = TestEnv(store: FakeIndexStore()..settings['indexing.disabled'] = '1');
+    await tester.pumpWidget(env.wrap(const AppGate()));
+    await settle(tester);
+    expect(find.byType(HomeScreen), findsOneWidget);
+    expect(find.text('Search index deleted'), findsOneWidget);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await settle(tester);
+    expect(env.indexing.startCalls, 0);
+
+    await tapVisible(tester, find.text('Rebuild index'));
+    await settle(tester);
+    expect(env.indexing.startCalls, 1);
+    expect(env.store.settings.containsKey('indexing.disabled'), isFalse);
+  });
 }

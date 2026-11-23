@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app/app.dart';
+import 'app/licenses.dart';
 import 'app/providers.dart';
 import 'core/design/app_theme.dart';
 import 'core/widgets/state_views.dart';
@@ -9,6 +10,7 @@ import 'data/db/sqlite_index_store.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  registerAppLicenses();
 
   final SqliteIndexStore store;
   try {

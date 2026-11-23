@@ -90,7 +90,7 @@ class _PermissionSection extends ConsumerWidget {
           TextButton(
             onPressed: () => guarded(() async {
               final r = await controller.request();
-              if (r.canBrowse) unawaited(ref.read(indexingActionsProvider).start());
+              if (r.canBrowse) unawaited(ref.read(indexingActionsProvider).autoStart());
             }),
             child: const Text('Allow access'),
           ),
@@ -147,6 +147,7 @@ class _IndexingSection extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final progress = ref.watch(indexingProgressProvider);
     final stats = ref.watch(indexStatsProvider).value;
+    final deleted = ref.watch(indexingDisabledProvider).value ?? false;
     final value = progress.value;
     final running = value?.isRunning ?? false;
     final actions = ref.read(indexingActionsProvider);
@@ -157,7 +158,7 @@ class _IndexingSection extends ConsumerWidget {
         const SectionHeader('Indexing'),
         if (value != null)
           IndexingStatusCard(
-            view: IndexingStatusView.from(value, stats),
+            view: IndexingStatusView.from(value, stats, indexDeleted: deleted),
             onAction: (a) => handleStatusAction(context, ref, a),
           )
         else if (progress.hasError)
@@ -177,7 +178,7 @@ class _IndexingSection extends ConsumerWidget {
         Align(
           alignment: AlignmentDirectional.centerEnd,
           child: OutlinedButton.icon(
-            onPressed: running ? null : () => unawaited(actions.start()),
+            onPressed: running ? null : () => unawaited(actions.rebuild()),
             icon: const Icon(Icons.refresh),
             label: const Text('Re-scan now'),
           ),
@@ -345,7 +346,7 @@ class _DataSection extends ConsumerWidget {
         // A SnackBar with an action persists by default (until dismissed),
         // which kept this one on screen across later routes.
         persist: false,
-        action: SnackBarAction(label: 'Re-index now', onPressed: () => unawaited(actions.start())),
+        action: SnackBarAction(label: 'Rebuild index', onPressed: () => unawaited(actions.rebuild())),
       ));
     } else {
       messenger.showSnackBar(const SnackBar(content: Text('Couldn’t delete the index. Please try again.')));

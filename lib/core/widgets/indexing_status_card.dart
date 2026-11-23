@@ -7,7 +7,7 @@ import 'format.dart';
 
 enum StatusTone { neutral, working, success, warning, error }
 
-enum StatusAction { start, pause, resume, retry, allowAccess }
+enum StatusAction { start, pause, resume, retry, allowAccess, rebuild }
 
 /// What the indexing status card shows for a given progress + stats.
 /// Pure so it can be unit-tested.
@@ -36,7 +36,19 @@ class IndexingStatusView {
   /// Optional secondary line (e.g. technical error message, failed count).
   final String? details;
 
-  factory IndexingStatusView.from(IndexingProgress p, IndexStats? stats, {DateTime? now}) {
+  /// [indexDeleted]: the user deleted the local index and automatic
+  /// indexing is off until they rebuild it.
+  factory IndexingStatusView.from(IndexingProgress p, IndexStats? stats, {bool indexDeleted = false, DateTime? now}) {
+    if (indexDeleted && !p.isRunning) {
+      return const IndexingStatusView(
+        title: 'Search index deleted',
+        message: 'Nothing from your photos is stored, so search won’t find anything. '
+            'Rebuild the index when you want to search again.',
+        icon: Icons.delete_sweep_outlined,
+        tone: StatusTone.neutral,
+        action: StatusAction.rebuild,
+      );
+    }
     final indexed = stats?.indexedImages ?? 0;
     final last = p.lastCompletedAt ?? stats?.lastIndexedAt;
     final failedLine = p.failed > 0 ? '${formatCount(p.failed)} couldn’t be read and will be retried later.' : null;
@@ -199,10 +211,11 @@ class IndexingStatusCard extends StatelessWidget {
       StatusAction.resume => ('Resume', Icons.play_arrow),
       StatusAction.retry => ('Try again', Icons.refresh),
       StatusAction.allowAccess => ('Allow access', Icons.photo_library_outlined),
+      StatusAction.rebuild => ('Rebuild index', Icons.restart_alt),
     };
     void onPressed() => onAction(action);
     return switch (action) {
-      StatusAction.allowAccess || StatusAction.retry =>
+      StatusAction.allowAccess || StatusAction.retry || StatusAction.rebuild =>
         FilledButton.icon(onPressed: onPressed, icon: Icon(icon), label: Text(label)),
       _ => TextButton.icon(onPressed: onPressed, icon: Icon(icon), label: Text(label)),
     };

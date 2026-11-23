@@ -82,10 +82,37 @@ void main() {
     expect(env.store.clearAllCalls, 1);
     expect(env.store.statsCalls, greaterThan(statsCallsBefore));
     expect(find.text('Local index deleted'), findsOneWidget);
+    // Durable: auto-indexing is disabled and the card says so (QA-20, QA-13).
+    expect(env.store.settings['indexing.disabled'], '1');
+    expect(find.text('Search index deleted'), findsOneWidget);
+    expect(find.text('Up to date'), findsNothing);
 
-    await tester.tap(find.text('Re-index now'));
-    await tester.pump();
+    await tester.tap(find.text('Rebuild index').last);
+    await settle(tester);
     expect(env.indexing.startCalls, 1);
+    expect(env.store.settings.containsKey('indexing.disabled'), isFalse);
+  });
+
+  testWidgets('deleted index: card offers Rebuild index; Re-scan also re-enables', (tester) async {
+    final env = TestEnv(
+      store: FakeIndexStore()..settings['indexing.disabled'] = '1',
+      indexing: FakeIndexingService(const IndexingProgress(phase: IndexingPhase.completed)),
+    );
+    await pumpSettings(tester, env: env);
+    expect(find.text('Search index deleted'), findsOneWidget);
+    await tapVisible(tester, find.text('Re-scan now'));
+    await settle(tester);
+    expect(env.indexing.startCalls, 1);
+    expect(env.store.settings.containsKey('indexing.disabled'), isFalse);
+  });
+
+  testWidgets('delete removes the stale last-completed time', (tester) async {
+    final env = await pumpSettings(tester);
+    env.store.settings['indexing.lastCompletedAt'] = '123';
+    await openDeleteDialog(tester);
+    await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+    await settle(tester);
+    expect(env.store.settings.containsKey('indexing.lastCompletedAt'), isFalse);
   });
 
   testWidgets('delete failure is reported', (tester) async {
