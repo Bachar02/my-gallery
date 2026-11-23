@@ -60,7 +60,22 @@ class _ViewerScreenState extends ConsumerState<ViewerScreen> {
           backgroundColor: scheme.surfaceContainerLowest,
           extendBodyBehindAppBar: true,
           appBar: AppBar(
-            backgroundColor: scheme.surfaceContainerLowest.withValues(alpha: 0.6),
+            backgroundColor: Colors.transparent,
+            foregroundColor: Colors.white,
+            elevation: 0,
+            scrolledUnderElevation: 0,
+            // Scrim keeps the counter and Share readable over bright or
+            // text-heavy images without blocking the picture.
+            flexibleSpace: const DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  stops: [0, 0.6, 1],
+                  colors: [Color(0xB3000000), Color(0x73000000), Color(0x00000000)],
+                ),
+              ),
+            ),
             title: total > 1 ? Text('${_index + 1} of $total') : null,
             actions: [
               IconButton(

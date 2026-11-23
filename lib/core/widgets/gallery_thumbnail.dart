@@ -8,38 +8,64 @@ import '../../domain/models.dart';
 import '../design/tokens.dart';
 import 'format.dart';
 
-/// Encoded thumbnail bytes for an image id (null when unavailable).
-/// The repository caches; this provider is disposed when off-screen.
-final thumbnailProvider = FutureProvider.autoDispose.family<Uint8List?, String>(
-  (ref, id) => ref.watch(galleryRepositoryProvider).thumbnail(id, size: 256),
+/// Thumbnail request: image id plus the requested longest side in pixels.
+typedef ThumbnailRequest = ({String id, int size});
+
+/// Encoded thumbnail bytes (null when unavailable). The repository caches;
+/// this provider is disposed when off-screen.
+final thumbnailProvider = FutureProvider.autoDispose.family<Uint8List?, ThumbnailRequest>(
+  (ref, req) => ref.watch(galleryRepositoryProvider).thumbnail(req.id, size: req.size),
   retry: (_, _) => null,
 );
 
-/// Square thumbnail with placeholder and graceful fallback.
-class GalleryThumbnail extends ConsumerWidget {
-  const GalleryThumbnail({super.key, required this.imageId});
+/// Size buckets keep the repository cache effective across tile sizes.
+const thumbnailBuckets = [256, 384, 512, 768, 1024];
 
-  final String imageId;
+/// Longest-side size to request so that the image's *short* side covers a
+/// square tile of [tilePx] physical pixels, rounded up to a bucket.
+int thumbnailSizeFor({required double tilePx, required int width, required int height}) {
+  final longSide = width > height ? width : height;
+  final shortSide = width > height ? height : width;
+  final ratio = (shortSide <= 0 || longSide <= 0) ? 1.0 : longSide / shortSide;
+  final needed = (tilePx * ratio).ceil();
+  for (final b in thumbnailBuckets) {
+    if (b >= needed) return b;
+  }
+  return thumbnailBuckets.last;
+}
+
+/// Square-cropped thumbnail, sharp at the device's pixel density.
+/// Screenshots are cropped from the top, where the title or chat header is.
+class GalleryThumbnail extends ConsumerWidget {
+  const GalleryThumbnail({super.key, required this.image});
+
+  final GalleryImage image;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = Theme.of(context).colorScheme;
-    final thumb = ref.watch(thumbnailProvider(imageId));
-    final placeholder = ColoredBox(color: scheme.surfaceContainerHighest);
-    final unavailable = ColoredBox(
-      color: scheme.surfaceContainerHighest,
-      child: Center(child: Icon(Icons.image_not_supported_outlined, color: scheme.onSurfaceVariant)),
-    );
-    return switch (thumb) {
-      AsyncData(value: final bytes?) => Image.memory(
-          bytes,
-          fit: BoxFit.cover,
-          gaplessPlayback: true,
-          errorBuilder: (_, _, _) => unavailable,
-        ),
-      AsyncData() || AsyncError() => unavailable,
-      _ => placeholder,
-    };
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    return LayoutBuilder(builder: (context, constraints) {
+      final side = constraints.biggest.shortestSide.isFinite ? constraints.biggest.shortestSide : 128.0;
+      final size = thumbnailSizeFor(tilePx: side * dpr, width: image.width, height: image.height);
+      final thumb = ref.watch(thumbnailProvider((id: image.id, size: size)));
+      final unavailable = ColoredBox(
+        color: scheme.surfaceContainerHighest,
+        child: Center(child: Icon(Icons.image_not_supported_outlined, color: scheme.onSurfaceVariant)),
+      );
+      return switch (thumb) {
+        AsyncData(value: final bytes?) => Image.memory(
+            bytes,
+            fit: BoxFit.cover,
+            alignment: image.kind == ImageKind.screenshot ? Alignment.topCenter : Alignment.center,
+            filterQuality: FilterQuality.medium,
+            gaplessPlayback: true,
+            errorBuilder: (_, _, _) => unavailable,
+          ),
+        AsyncData() || AsyncError() => unavailable,
+        _ => ColoredBox(color: scheme.surfaceContainerHighest),
+      };
+    });
   }
 }
 
@@ -75,7 +101,7 @@ class ResultTile extends StatelessWidget {
             Expanded(
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(AppRadius.md),
-                child: GalleryThumbnail(imageId: image.id),
+                child: GalleryThumbnail(image: image),
               ),
             ),
             Padding(

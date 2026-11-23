@@ -90,8 +90,15 @@ class FakeGalleryRepository implements GalleryRepository {
   @override
   Future<GalleryImage?> getImage(String id) async => images[id];
 
+  /// Requested thumbnail sizes by id; set [thumbnailBytes] to return images.
+  final thumbnailRequests = <String, List<int>>{};
+  Uint8List? thumbnailBytes;
+
   @override
-  Future<Uint8List?> thumbnail(String id, {int size = 256}) async => null;
+  Future<Uint8List?> thumbnail(String id, {int size = 256}) async {
+    (thumbnailRequests[id] ??= []).add(size);
+    return thumbnailBytes;
+  }
 
   @override
   Future<Uint8List?> displayImage(String id, {int maxSide = 2048}) async =>
