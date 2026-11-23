@@ -8,38 +8,63 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../domain/interfaces.dart';
 import '../domain/models.dart';
+import '../features/gallery/data/android_image_actions.dart';
+import '../features/gallery/data/photo_manager_gallery_repository.dart';
+import '../features/indexing/default_indexing_service.dart';
+import '../features/search/data/hybrid_search_engine.dart';
+import '../features/search/data/rule_based_query_parser.dart';
+import '../ml/clip/mobile_clip_model.dart';
+import '../ml/ocr/mlkit_ocr_engine.dart';
 
 final galleryRepositoryProvider = Provider<GalleryRepository>(
-  (ref) => throw UnimplementedError('galleryRepositoryProvider not wired'),
+  (ref) => PhotoManagerGalleryRepository(),
 );
 
 final imageActionsProvider = Provider<ImageActions>(
-  (ref) => throw UnimplementedError('imageActionsProvider not wired'),
+  (ref) => AndroidImageActions(ref.watch(galleryRepositoryProvider)),
 );
 
-/// Overridden in main() with an already-opened store.
+/// Overridden in main() with an already-opened store (opening is async).
 final indexStoreProvider = Provider<IndexStore>(
   (ref) => throw UnimplementedError('indexStoreProvider must be overridden with an opened store'),
 );
 
-final ocrEngineProvider = Provider<OcrEngine>(
-  (ref) => throw UnimplementedError('ocrEngineProvider not wired'),
-);
+final ocrEngineProvider = Provider<OcrEngine>((ref) {
+  final engine = MlKitOcrEngine();
+  ref.onDispose(engine.dispose);
+  return engine;
+});
 
-final semanticModelProvider = Provider<SemanticModel>(
-  (ref) => throw UnimplementedError('semanticModelProvider not wired'),
-);
+/// One shared model instance: indexing embeds images, search embeds queries.
+/// Loaded lazily by whichever needs it first; failure means text-only mode.
+final semanticModelProvider = Provider<SemanticModel>((ref) {
+  final model = MobileClipModel();
+  ref.onDispose(model.dispose);
+  return model;
+});
 
-final queryParserProvider = Provider<QueryParser>(
-  (ref) => throw UnimplementedError('queryParserProvider not wired'),
-);
+final queryParserProvider = Provider<QueryParser>((ref) => RuleBasedQueryParser());
 
-final indexingServiceProvider = Provider<IndexingService>(
-  (ref) => throw UnimplementedError('indexingServiceProvider not wired'),
-);
+final indexingServiceProvider = Provider<IndexingService>((ref) {
+  final service = DefaultIndexingService(
+    gallery: ref.watch(galleryRepositoryProvider),
+    store: ref.watch(indexStoreProvider),
+    ocr: ref.watch(ocrEngineProvider),
+    semantic: ref.watch(semanticModelProvider),
+    // The store commits one transaction per batch; ~50 balances UI-isolate
+    // blocking time against transaction overhead (docs/DATABASE.md).
+    batchSize: 50,
+  );
+  ref.onDispose(service.dispose);
+  return service;
+});
 
 final searchEngineProvider = Provider<SearchEngine>(
-  (ref) => throw UnimplementedError('searchEngineProvider not wired'),
+  (ref) => HybridSearchEngine(
+    store: ref.watch(indexStoreProvider),
+    parser: ref.watch(queryParserProvider),
+    model: ref.watch(semanticModelProvider),
+  ),
 );
 
 /// Live indexing progress for the UI.
