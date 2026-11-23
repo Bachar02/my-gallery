@@ -171,6 +171,20 @@ class DefaultIndexingService implements IndexingService {
   // ------------------------------------------------------------------ run
 
   Future<void> _sync() async {
+    final sw = Stopwatch()..start();
+    var embedded = 0;
+    try {
+      await _syncInner(onEmbedded: () => embedded++);
+    } finally {
+      // Counts only: no file names, ids or recognised text in logs.
+      final p = _current;
+      debugPrint('Indexing run ended: phase=${p.phase.name} processed=${p.processed} '
+          'failed=${p.failed} total=${p.total} elapsedMs=${sw.elapsedMilliseconds} '
+          'embeddings=${embedded > 0 ? 'yes ($embedded)' : 'no'}');
+    }
+  }
+
+  Future<void> _syncInner({required void Function() onEmbedded}) async {
     var total = 0;
     var processed = 0;
     var failed = 0;
@@ -229,6 +243,7 @@ class DefaultIndexingService implements IndexingService {
         switch (outcome) {
           case _Indexed(:final record):
             batch.add(record);
+            if (record.embedding != null) onEmbedded();
           case _Vanished():
             await _store.delete([image.id]);
           case _Failed():
@@ -253,7 +268,7 @@ class DefaultIndexingService implements IndexingService {
       await _store.setSetting(lastCompletedSettingKey, done.toIso8601String());
       _emit(_phase(IndexingPhase.completed, total: total, processed: processed, failed: failed));
     } catch (e, st) {
-      debugPrint('Indexing failed: $e\n$st');
+      debugPrint('Indexing failed: ${e.runtimeType}\n$st');
       try {
         await flush();
       } catch (_) {
@@ -311,7 +326,7 @@ class DefaultIndexingService implements IndexingService {
         pipelineVersion: pipelineStamp(withEmbedding: embedding != null),
       ));
     } catch (e) {
-      debugPrint('Indexing ${image.id} failed: $e');
+      debugPrint('Indexing an image failed: ${e.runtimeType}');
       return _diagnoseFailure(image);
     }
   }
@@ -323,7 +338,7 @@ class DefaultIndexingService implements IndexingService {
       try {
         return await _ocr.recognize(original);
       } catch (e) {
-        debugPrint('OCR on original of ${image.id} failed, using rendition: $e');
+        debugPrint('OCR on an original failed (${e.runtimeType}), using rendition');
       }
     }
     final bytes = await _safe(() => _gallery.displayImage(image.id, maxSide: ocrFallbackMaxSide));
@@ -334,7 +349,7 @@ class DefaultIndexingService implements IndexingService {
       await tmp.writeAsBytes(bytes, flush: true);
       return await _ocr.recognize(tmp);
     } catch (e) {
-      debugPrint('OCR on rendition of ${image.id} failed: $e');
+      debugPrint('OCR on a rendition failed: ${e.runtimeType}');
       return null;
     } finally {
       try {
@@ -359,7 +374,7 @@ class DefaultIndexingService implements IndexingService {
     try {
       return await f();
     } catch (e) {
-      debugPrint('Indexing step failed: $e');
+      debugPrint('Indexing step failed: ${e.runtimeType}');
       return null;
     }
   }

@@ -86,6 +86,19 @@ matches are weighted at 0.55 of a literal match and reported as
    * visual evidence: cosine ≥ **0.20** (absolute floor) **and** ≥ best visual
      cosine − **0.07** (margin).
 
+   * **people:** a name in a person context (“conversation with Jamie”,
+     “message from alex”, “Jamie's address”, “what Sam said”, detected by
+     `lib/features/search/domain/person_mentions.dart`) is required text: only
+     images whose OCR text contains the whole word are returned, visual-only
+     candidates are excluded, and the name is removed from the CLIP text. No such
+     image → empty result. Places/things (“trip to Germany”, “sent me their bank
+     details”) are not treated as names.
+   * **strong text present:** if any image covers every query term in its text
+     (literally or via an expansion such as IBAN for “bank details”), visual-only
+     candidates need cosine ≥ 0.27 instead of 0.20 (chat screenshots look alike
+     to CLIP: on the test gallery an unrelated chat scored 0.221 and a receipt
+     0.230 for “bank details”, the IBAN chat 0.264).
+
    Quoted phrases are required for every result. With no evidence the response
    is empty — never the least-bad images.
 7. Near-duplicate collapse: two images are duplicates if their dHash differs in

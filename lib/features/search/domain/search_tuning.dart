@@ -49,6 +49,15 @@ abstract final class SearchTuning {
   /// 0.07 -> 0.66 / 0.94, 0.10 -> 0.66 / 0.88 on the calibration set.
   static const double visualMargin = 0.07;
 
+  /// Floor for visual-only results when another image already has strong
+  /// text evidence (covers every query term). Chat screenshots all look
+  /// alike to CLIP: for "bank details" on the test gallery the IBAN chat scored
+  /// 0.264, but an unrelated chat 0.221 and a receipt 0.230 also passed the
+  /// 0.20 floor and margin. 0.27 is above every non-matching screenshot in
+  /// calibration except one outlier photo pair (max 0.279) and keeps the
+  /// strongest true visual matches (0.27-0.33).
+  static const double visualOnlyFloorWithStrongText = 0.27;
+
   /// Cosine at which visual evidence counts as full strength (score 1.0);
   /// strong matches in calibration were 0.25-0.33.
   static const double visualFull = 0.28;

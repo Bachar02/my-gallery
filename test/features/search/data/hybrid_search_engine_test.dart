@@ -1,3 +1,6 @@
+import 'dart:math' as math;
+import 'dart:typed_data';
+
 import 'package:ai_gallery/domain/models.dart';
 import 'package:ai_gallery/features/search/data/hybrid_search_engine.dart';
 import 'package:ai_gallery/features/search/data/rule_based_query_parser.dart';
@@ -244,6 +247,81 @@ void main() {
       final a = record(galleryImage('a'), hash: 1);
       final b = record(galleryImage('b'));
       expect(HybridSearchEngine.isNearDuplicate(a, b), isFalse);
+    });
+  });
+
+  group('end-to-end fixture gallery (tool/fixtures/make_fixtures.py)', () {
+    // Desktop MobileCLIP cosines of the fixture screenshots for the prompts
+    // "a screenshot of bank details" (a) and "a screenshot of conversation" (b).
+    Float32List vec(double a, double b) {
+      final v = Float32List(4);
+      v[0] = a;
+      v[3] = b;
+      v[1] = math.sqrt(1 - a * a - b * b);
+      return v;
+    }
+
+    const jamieText = '12:41\nJ Jamie\nonline\nAre we still on for dinner on Friday?\nYes! 7:30 at the usual place\n'
+        "Perfect, I'll book a table for four\nGreat, see you then Jamie\nMessage";
+    const samText = '12:41\nS Sam\nonline\nSo for our trip to Germany, Berlin first or Munich?\n'
+        'Berlin first, then the train to Munich on Thursday\nI found flights for 89 euros each\n'
+        "Book them! Can't wait for the trip\nMessage";
+    const alexText = '12:41\nA Alex\nonline\nCan you send me the details for the rent?\nSure, here are my bank details:\n'
+        'IBAN: DE89 3704 0044 0532 0130 00 BIC: COBADEFFXXX Account holder: Alex Morgan\nThanks, transferring now\nMessage';
+    const receiptText = 'CORNER MARKET\nMilk 1.29\nBread 2.49\nCoffee beans 8.99\nTOTAL 12.77\nCard payment';
+
+    setUp(() {
+      model = FakeSemanticModel(texts: {
+        'bank details': Float32List.fromList([1, 0, 0, 0]),
+        'conversation': Float32List.fromList([0, 0, 0, 1]),
+      });
+      store
+        ..put(record(galleryImage('jamie', created: DateTime(2026, 11, 2)), text: jamieText, embedding: vec(0.197, 0.233)))
+        ..put(record(galleryImage('sam', created: DateTime(2026, 10, 15)), text: samText, embedding: vec(0.221, 0.208)))
+        ..put(record(galleryImage('alex', created: DateTime(2026, 10, 20)), text: alexText, embedding: vec(0.264, 0.210)))
+        ..put(record(galleryImage('receipt', created: DateTime(2026, 11, 1)), text: receiptText,
+            embedding: vec(0.230, 0.189)));
+    });
+
+    test('conversation with Jamie: the name is required text, never visual', () async {
+      final r = await engine().search('Find the screenshot of my conversation with Jamie');
+      expect(ids(r), ['jamie']);
+      expect(model.prompts, ['a screenshot of conversation'], reason: 'name not sent to CLIP');
+      expect(r.query.semanticText, 'conversation');
+      expect(descriptions(r.results.single), contains('Contains the text “jamie”'));
+    });
+
+    test('a name that appears in no image gives an empty result', () async {
+      final r = await engine().search('chat with Priya');
+      expect(r.results, isEmpty);
+    });
+
+    test('a name only as a prefix of a longer word is not evidence', () async {
+      store.put(record(galleryImage('jamieson'), text: 'Jamieson Ltd invoice', embedding: vec(0.1, 0.3)));
+      final r = await engine().search('messages from jamie');
+      expect(ids(r), ['jamie']);
+    });
+
+    test('bank details: strong text evidence keeps borderline visual-only chats out', () async {
+      final r = await engine().search('Find the screenshot where someone sent me their bank details');
+      // sam (0.221) and receipt (0.230) pass the 0.20 floor and the 0.07 margin
+      // to alex (0.264), but alex covers "bank details" in its text.
+      expect(ids(r), ['alex']);
+      expect(descriptions(r.results.single), contains('Contains the text “bank” and “details”'));
+    });
+
+    test('without strong text evidence, visual-only admission is unchanged', () async {
+      store.records.remove('alex');
+      final r = await engine().search('Find the screenshot where someone sent me their bank details');
+      // Nothing covers "bank details" in text any more: receipt and sam are
+      // admitted visually (above floor, within margin) as before.
+      expect(ids(r), containsAll(['receipt', 'sam']));
+      expect(r.results.every((x) => x.reasons.any((m) => m.signal == MatchSignal.visualContent)), isTrue);
+    });
+
+    test('trip to Germany still finds the Sam chat (no false person)', () async {
+      final r = await engine().search('Find the conversation where we discussed our trip to Germany');
+      expect(ids(r).first, 'sam');
     });
   });
 

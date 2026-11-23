@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import '../../../domain/interfaces.dart';
 import '../../../domain/models.dart';
 import '../domain/intent_expansion.dart';
+import '../domain/person_mentions.dart';
 import '../domain/search_tuning.dart';
 import '../domain/text_matching.dart';
 
@@ -51,9 +52,16 @@ class HybridSearchEngine implements SearchEngine {
       dateRange: filters.dateRange ?? parsed.dateRange,
       kinds: filters.kinds.isNotEmpty ? filters.kinds : {if (parsed.kind != null) parsed.kind!},
     );
+    // People named in the query are required literal text and are never
+    // sent to the image model (it cannot know who "Jamie" is).
+    final people = [for (final n in PersonMentions.detect(query)) if (parsed.keywords.contains(n)) n];
+    final visualText = [
+      for (final w in parsed.semanticText.split(' '))
+        if (w.isNotEmpty && !people.contains(w)) w,
+    ].join(' ');
     final shown = ParsedQuery(
       raw: parsed.raw,
-      semanticText: parsed.semanticText,
+      semanticText: visualText,
       keywords: parsed.keywords,
       phrases: parsed.phrases,
       dateRange: effective.dateRange,
@@ -68,12 +76,12 @@ class HybridSearchEngine implements SearchEngine {
     }
 
     final stats = await _store.stats();
-    final visualFuture = _visualHits(parsed, effective, stats);
-    final textFuture = _textHits(parsed, effective);
+    final visualFuture = _visualHits(shown, effective, stats);
+    final textFuture = _textHits(shown, effective);
     final visual = await visualFuture;
     final text = await textFuture;
 
-    final results = await _rank(parsed, effective, text, visual, stats);
+    final results = await _rank(shown, effective, text, visual, stats, people);
     return respond(results, semantic: visual != null);
   }
 
@@ -131,6 +139,7 @@ class HybridSearchEngine implements SearchEngine {
     _TextRetrieval text,
     List<VectorHit>? visual,
     IndexStats stats,
+    List<String> people,
   ) async {
     final cands = <String, _Candidate>{};
     _Candidate cand(String id) => cands.putIfAbsent(id, () => _Candidate(id));
@@ -176,6 +185,12 @@ class HybridSearchEngine implements SearchEngine {
       }
     }
 
+    // Named people are required: only images whose text contains the name.
+    for (final name in people) {
+      final ids = {for (final h in text.terms[name] ?? const <TextHit>[]) h.imageId};
+      allowed = allowed == null ? ids : allowed.intersection(ids);
+    }
+
     if (allowed != null) cands.removeWhere((id, _) => !allowed!.contains(id));
     if (cands.isEmpty) return const [];
 
@@ -193,6 +208,9 @@ class HybridSearchEngine implements SearchEngine {
       if (r == null) continue; // deleted since it was indexed
       final c = top[i]..record = r;
       _verify(c);
+      // The name must really be a word of the recognised text (not just a
+      // prefix, not only the file name).
+      if (people.any((n) => !(c.literal[n]?.inOcr ?? false))) continue;
       c.score = _score(c, q, weights, totalWeight);
       verified.add(c);
     }
@@ -200,11 +218,21 @@ class HybridSearchEngine implements SearchEngine {
     // Text evidence must contain at least one exact word and be close to the
     // best text score; visual evidence was thresholded above.
     final bestText = verified.where((c) => c.hasExactText).map((c) => c.textScore).fold<double>(0, math.max);
-    final accepted = <_Candidate>[];
     for (final c in verified) {
       c.textAccepted =
           c.hasExactText && c.textScore > 0 && c.textScore >= SearchTuning.textRelativeCut * bestText;
-      if (!c.textAccepted && c.visualSimilarity == null) continue;
+    }
+    // When some image covers every query term in its text (literally or via
+    // an expansion such as IBAN for "bank details"), an image with visual
+    // evidence only must be clearly similar, not just above the floor.
+    final strongText = verified.any((c) => c.textAccepted && _coversAllTerms(c, weights.keys));
+    final accepted = <_Candidate>[];
+    for (final c in verified) {
+      if (!c.textAccepted) {
+        final sim = c.visualSimilarity;
+        if (sim == null) continue;
+        if (strongText && sim < SearchTuning.visualOnlyFloorWithStrongText) continue;
+      }
       c.score = (c.textAccepted ? SearchTuning.textWeight * c.textScore : 0) +
           (c.visualSimilarity != null ? SearchTuning.visualWeight * c.visualScore : 0);
       accepted.add(c);
@@ -216,6 +244,18 @@ class HybridSearchEngine implements SearchEngine {
       for (final c in kept.take(SearchTuning.maxResults))
         SearchResult(image: c.record!.image, score: c.score, reasons: _reasons(c, q, f)),
     ];
+  }
+
+  /// Every literal term/phrase matched as a whole word, or covered by an
+  /// exactly matched expansion of a concept containing it.
+  static bool _coversAllTerms(_Candidate c, Iterable<String> keys) {
+    for (final k in keys) {
+      if (c.literal[k]?.exact ?? false) continue;
+      final viaExpansion =
+          c.expansions.entries.any((x) => x.value.exact && x.key.concept.split(' ').contains(k));
+      if (!viaExpansion) return false;
+    }
+    return keys.isNotEmpty;
   }
 
   static void _collect(List<TextHit> hits, void Function(String id, double strength, TextHit hit) add) {
