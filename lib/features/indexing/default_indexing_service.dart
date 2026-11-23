@@ -274,8 +274,19 @@ class DefaultIndexingService implements IndexingService {
       } catch (_) {
         // The store itself is failing; the error below says so.
       }
-      _emit(_phase(IndexingPhase.error, total: total, processed: processed, failed: failed, error: e.toString()));
+      _emit(_phase(IndexingPhase.error, total: total, processed: processed, failed: failed, error: userFacingError(e)));
     }
+  }
+
+  /// Short description of [e] for the status card (and safe to log): only
+  /// the first line, without file paths. `SqliteException.toString()` appends
+  /// the failing SQL and its bound parameters (recognised text, file names),
+  /// and `FileSystemException` includes the path.
+  @visibleForTesting
+  static String userFacingError(Object e) {
+    var s = e.toString().split('\n').first.trim();
+    s = s.replaceAll(RegExp(r",?\s*path = '[^']*'"), '');
+    return s.length > 200 ? '${s.substring(0, 200)}…' : s;
   }
 
   static bool _isGranted(GalleryPermission p) => p == GalleryPermission.granted || p == GalleryPermission.limited;

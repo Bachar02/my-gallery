@@ -78,6 +78,16 @@ class SqliteIndexStore implements IndexStore {
   /// Lazily loaded id -> dHash map for near-duplicate queries.
   Map<String, int>? _hashes;
 
+  /// One-line description of [e] that is safe to log: `SqliteException`'s
+  /// `toString()` appends the failing SQL statement *and its bound
+  /// parameters* (OCR text, file names, search queries), so only the first
+  /// line (result code and SQLite message) is kept.
+  @visibleForTesting
+  static String describeError(Object e) {
+    final first = e.toString().split('\n').first.trim();
+    return first.length > 200 ? '${first.substring(0, 200)}…' : first;
+  }
+
   /// Path of the database file, or null for in-memory stores.
   String? get path => _path;
 
@@ -108,7 +118,7 @@ class SqliteIndexStore implements IndexStore {
       // discarded and rebuilt by the indexing service on its next run. The
       // old file is deleted rather than kept as a backup because it holds
       // the recognised text of private screenshots.
-      debugPrint('IndexStore: cannot open database ($e); recreating an empty index');
+      debugPrint('IndexStore: cannot open database (${describeError(e)}); recreating an empty index');
       _deleteDatabaseFiles();
       return _openAndMigrate();
     }
@@ -182,7 +192,7 @@ class SqliteIndexStore implements IndexStore {
       return body(db);
     } on SqliteException catch (e) {
       if (e.resultCode == SqlError.SQLITE_CORRUPT || e.resultCode == SqlError.SQLITE_NOTADB) {
-        debugPrint('IndexStore: database corruption detected ($e); recreating an empty index');
+        debugPrint('IndexStore: database corruption detected (${describeError(e)}); recreating an empty index');
         _resetCaches();
         try {
           db.close();
@@ -291,7 +301,7 @@ class SqliteIndexStore implements IndexStore {
     if (emb == null || emb.isEmpty) return null;
     final model = r.embeddingModel;
     if (model == null || model.isEmpty) {
-      debugPrint('IndexStore: embedding for ${r.image.id} has no model id; not stored');
+      debugPrint('IndexStore: an embedding has no model id; not stored');
       return null;
     }
     return emb;
@@ -368,6 +378,7 @@ class SqliteIndexStore implements IndexStore {
         // Embeddings go via ON DELETE CASCADE, FTS rows via trigger.
         db.execute('DELETE FROM images WHERE id IN (SELECT value FROM json_each(?))', [jsonEncode(ids)]);
       });
+      _truncateWal(db);
     });
     for (final id in ids) {
       _hashes?.remove(id);
@@ -634,7 +645,7 @@ class SqliteIndexStore implements IndexStore {
       try {
         loaded = await _loadInBackground(path, modelId);
       } catch (e) {
-        debugPrint('IndexStore: background vector load failed ($e); loading synchronously');
+        debugPrint('IndexStore: background vector load failed (${describeError(e)}); loading synchronously');
         workerFailed = true;
       }
       if (_closed) throw StateError('IndexStore has been closed');
@@ -788,7 +799,25 @@ class SqliteIndexStore implements IndexStore {
 
   @override
   Future<void> clearRecentSearches() async {
-    _run((db) => db.execute('DELETE FROM recent_searches'));
+    _run((db) {
+      db.execute('DELETE FROM recent_searches');
+      _truncateWal(db);
+    });
+  }
+
+  /// secure_delete zeroes freed content in the database file, but in WAL
+  /// mode the previous page images stay in the -wal side file until it is
+  /// overwritten. After deleting private data (vanished images, recent
+  /// searches) checkpoint and truncate the WAL so no copy survives there.
+  /// Best effort: a concurrent reader (background vector load) can make the
+  /// truncation partial; it then happens on a later call.
+  void _truncateWal(Database db) {
+    if (_path == null) return;
+    try {
+      db.select('PRAGMA wal_checkpoint(TRUNCATE)');
+    } on SqliteException catch (e) {
+      debugPrint('IndexStore: WAL truncation skipped (${describeError(e)})');
+    }
   }
 
   // -------------------------------------------------------------- settings

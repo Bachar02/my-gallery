@@ -22,7 +22,8 @@ class RecentSearchesController extends AsyncNotifier<List<String>> {
       if (!ref.mounted) return;
       state = AsyncData(await ref.read(indexStoreProvider).recentSearches());
     } catch (e) {
-      debugPrint('Could not record recent search: $e');
+      // Type only: the exception text can contain the query itself.
+      debugPrint('Could not record recent search: ${e.runtimeType}');
     }
   }
 

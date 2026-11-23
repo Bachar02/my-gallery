@@ -342,6 +342,9 @@ class _DataSection extends ConsumerWidget {
       messenger.showSnackBar(SnackBar(
         content: const Text('Local index deleted'),
         duration: const Duration(seconds: 8),
+        // A SnackBar with an action persists by default (until dismissed),
+        // which kept this one on screen across later routes.
+        persist: false,
         action: SnackBarAction(label: 'Re-index now', onPressed: () => unawaited(actions.start())),
       ));
     } else {
