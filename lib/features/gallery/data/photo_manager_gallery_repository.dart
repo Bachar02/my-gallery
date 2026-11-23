@@ -9,6 +9,7 @@ import 'package:photo_manager/photo_manager.dart';
 
 import '../../../domain/interfaces.dart';
 import '../../../domain/models.dart';
+import '../domain/capture_date.dart';
 import '../domain/image_kind_classifier.dart';
 import '../domain/permission_mapping.dart';
 import '../domain/thumbnail_geometry.dart';
@@ -16,7 +17,9 @@ import 'byte_lru_cache.dart';
 
 /// [GalleryRepository] backed by Android MediaStore through photo_manager.
 ///
-/// * Images only (no video/audio), newest first.
+/// * Images only (no video/audio), newest first by MediaStore date
+///   (DATE_TAKEN, else DATE_ADDED). `createdAt` can be earlier than that
+///   order suggests when it is recovered from the filename.
 /// * Every call goes through platform channels, so use it from the root
 ///   isolate. Decoding/encoding happens natively (Glide) off the UI thread.
 /// * Never throws for revoked permission or deleted files: returns
@@ -213,7 +216,14 @@ class PhotoManagerGalleryRepository implements GalleryRepository {
   GalleryImage _toImage(AssetEntity e) {
     final rel = normaliseRelativePath(e.relativePath);
     final title = (e.title == null || e.title!.isEmpty) ? null : e.title;
-    final created = (e.createDateSecond ?? 0) > 0 ? e.createDateTime : e.modifiedDateTime;
+    // DATE_TAKEN, else DATE_ADDED (photo_manager), else DATE_MODIFIED; then a
+    // filename date wins when MediaStore's value is clearly a copy time.
+    final mediaStoreCreated =
+        (e.createDateSecond ?? 0) > 0 ? e.createDateTime : e.modifiedDateTime;
+    final created = chooseCreatedAt(
+      mediaStoreCreated: mediaStoreCreated,
+      filenameDate: parseFilenameDate(title),
+    );
     final width = e.orientatedWidth;
     final height = e.orientatedHeight;
     _remember(e.id, _Meta(width, height, e.modifiedDateSecond ?? 0));

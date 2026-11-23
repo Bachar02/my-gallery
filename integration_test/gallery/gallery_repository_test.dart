@@ -72,10 +72,8 @@ void main() {
 
     expect(all.length, count);
     expect(all.map((e) => e.id).toSet().length, all.length, reason: 'duplicate ids');
-    for (var i = 1; i < all.length; i++) {
-      expect(!all[i].createdAt.isAfter(all[i - 1].createdAt), isTrue,
-          reason: 'not newest first at $i: ${all[i - 1].createdAt} then ${all[i].createdAt}');
-    }
+    // Order is MediaStore's (DATE_TAKEN, else DATE_ADDED). createdAt may be
+    // earlier when recovered from the filename, so it is not checked here.
 
     // Small pages must yield exactly the same sequence.
     final small = <GalleryImage>[];
@@ -96,6 +94,8 @@ void main() {
     expect(shot.relativePath, 'Pictures/Screenshots/');
     expect(shot.mimeType, 'image/png');
     expect((shot.width, shot.height), (1080, 2400));
+    // Pushed with adb (no DATE_TAKEN): capture date recovered from the name.
+    expect(shot.createdAt, DateTime(2024, 11, 1, 10, 10, 10));
 
     final samsung = named('Screenshot_20241102-111111_Chrome.jpg');
     expect(samsung.kind, ImageKind.screenshot);
