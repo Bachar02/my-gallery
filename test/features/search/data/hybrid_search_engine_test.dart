@@ -310,18 +310,83 @@ void main() {
       expect(descriptions(r.results.single), contains('Contains the text “bank” and “details”'));
     });
 
-    test('without strong text evidence, visual-only admission is unchanged', () async {
+    test('QA-06: text-centric intent with no text evidence drops borderline visual-only images', () async {
       store.records.remove('alex');
       final r = await engine().search('Find the screenshot where someone sent me their bank details');
-      // Nothing covers "bank details" in text any more: receipt and sam are
-      // admitted visually (above floor, within margin) as before.
-      expect(ids(r), containsAll(['receipt', 'sam']));
-      expect(r.results.every((x) => x.reasons.any((m) => m.signal == MatchSignal.visualContent)), isTrue);
+      // receipt (0.230) and sam (0.221) pass the plain floor and margin, but
+      // "bank details" is defined by its text and no image has any.
+      expect(r.results, isEmpty);
+    });
+
+    test('QA-06: a clearly similar image is still shown for a text-centric intent', () async {
+      store.records.remove('alex');
+      store.put(record(galleryImage('bankapp'), text: '', embedding: vec(0.31, 0.1)));
+      final r = await engine().search('bank details');
+      expect(ids(r), ['bankapp']);
     });
 
     test('trip to Germany still finds the Sam chat (no false person)', () async {
       final r = await engine().search('Find the conversation where we discussed our trip to Germany');
       expect(ids(r).first, 'sam');
+    });
+  });
+
+  group('QA fixes', () {
+    test('QA-06: Wi-Fi password with no Wi-Fi screenshot returns nothing', () async {
+      model = FakeSemanticModel(texts: {'wi fi password': unit(1, 1), 'wifi password': unit(1, 1)});
+      store
+        ..put(record(galleryImage('chat'), text: 'See you at the station', embedding: unit(0.22, 2)))
+        ..put(record(galleryImage('plain', kind: ImageKind.photo), embedding: unit(0.21, 2)));
+      final r = await engine().search('Wi-Fi password');
+      expect(r.results, isEmpty);
+    });
+
+    test('QA-06: non-intent visual queries keep the normal floor', () async {
+      model = FakeSemanticModel(texts: {'red car': unit(1, 1)});
+      store.put(record(galleryImage('car', kind: ImageKind.photo), embedding: unit(0.22, 2)));
+      final r = await engine().search('red car');
+      expect(ids(r), ['car']);
+    });
+
+    test('QA-12: semanticSearchUsed reports availability, also for filter-only and stop-word queries', () async {
+      model = FakeSemanticModel();
+      store.put(record(galleryImage('a', created: DateTime(2026, 11, 18)), embedding: unit(0.5)));
+      expect((await engine().search('screenshots from last week')).semanticSearchUsed, isTrue);
+      expect((await engine().search('the of and with')).semanticSearchUsed, isTrue);
+      expect((await engine(m: FakeSemanticModel(loadResult: false)).search('the of and with')).semanticSearchUsed,
+          isFalse);
+      store.records.clear();
+      store.put(record(galleryImage('b'), text: 'hello'));
+      expect((await engine().search('hello')).semanticSearchUsed, isFalse, reason: 'no embeddings');
+    });
+
+    test('QA-14: a pasted page issues a bounded number of index queries', () async {
+      store.put(record(galleryImage('a'), text: 'word1 word2'));
+      final long = List.generate(1000, (i) => 'word$i').join(' ');
+      final r = await engine().search(long);
+      expect(r.query.keywords.length, lessThanOrEqualTo(RuleBasedQueryParser.maxKeywords));
+      expect(store.searchTextCalls, lessThanOrEqualTo(RuleBasedQueryParser.maxKeywords + 16));
+    });
+
+    test('QA-15: boarding pass does not return train/concert tickets or a chat that mentions a flight', () async {
+      store
+        ..put(record(galleryImage('bp'), text: 'BOARDING PASS\nLH 2471\nGate G24 Seat 14C\nDeparture 07:55'))
+        ..put(record(galleryImage('bp2'), text: 'easyJet\nFlight EZY6123\nGate closes 06:10\nDeparture 06:40'))
+        ..put(record(galleryImage('train'), text: 'DB Ticket\nCoach 7 Seat 61\nBooking reference QX7P2L'))
+        ..put(record(galleryImage('concert'), text: 'ADMIT ONE\nRow F Seat 22'))
+        ..put(record(galleryImage('chat'), text: 'I found flights for 89 euros each'));
+      final r = await engine().search('Boarding pass');
+      expect(ids(r).first, 'bp');
+      expect(ids(r).toSet(), {'bp', 'bp2'}, reason: 'bp2 has gate + flight + departure');
+    });
+
+    test('QA-15: a lone decisive expansion (IBAN) survives a literal "bank details" match', () async {
+      store
+        ..put(record(galleryImage('lit'), text: 'Here are my bank details'))
+        ..put(record(galleryImage('iban'), text: 'IBAN: GB33BUKB20201555555555'))
+        ..put(record(galleryImage('rib'), text: 'Prime rib special'));
+      final r = await engine().search('bank details');
+      expect(ids(r), ['lit', 'iban']);
     });
   });
 

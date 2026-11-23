@@ -29,6 +29,10 @@ abstract final class SearchTuning {
   /// "bank details" is good but indirect evidence).
   static const double expansionWeight = 0.55;
 
+  /// See HybridSearchEngine: with a full literal match present, an
+  /// expansion-only match needs this many different expansion terms.
+  static const int minExpansionsWithFullLiteral = 2;
+
   // ------------------------------------------------------- visual (CLIP)
 
   /// Hits requested from the vector store.
@@ -50,7 +54,8 @@ abstract final class SearchTuning {
   static const double visualMargin = 0.07;
 
   /// Floor for visual-only results when another image already has strong
-  /// text evidence (covers every query term). Chat screenshots all look
+  /// text evidence (covers every query term), and for text-centric intents
+  /// (password, bank details, tickets...) when no image has text evidence. Chat screenshots all look
   /// alike to CLIP: for "bank details" on the test gallery the IBAN chat scored
   /// 0.264, but an unrelated chat 0.221 and a receipt 0.230 also passed the
   /// 0.20 floor and margin. 0.27 is above every non-matching screenshot in

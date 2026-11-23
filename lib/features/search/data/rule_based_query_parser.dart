@@ -27,6 +27,12 @@ class RuleBasedQueryParser implements QueryParser {
 
   final DateTime Function() _clock;
 
+  /// Input beyond this many characters is ignored (a pasted page must not
+  /// turn into hundreds of index queries; each keyword costs one FTS query).
+  static const int maxQueryChars = 256;
+  static const int maxKeywords = 32;
+  static const int maxPhrases = 8;
+
   static final RegExp _quoted = RegExp(r'"([^"]+)"|“([^”]+)”|„([^“”]+)[“”]|«([^»]+)»');
   static final RegExp _kind = RegExp(
     r'\b(?:screen[\s-]?shots?|screen[\s-]?grabs?|screen[\s-]?caps?|screencaps?)\b',
@@ -41,10 +47,11 @@ class RuleBasedQueryParser implements QueryParser {
     // 1. Quoted phrases. Replaced by a separator so the words on either side
     //    never form a multi-word date expression together.
     final phrases = <String>[];
-    var text = raw.replaceAllMapped(_quoted, (m) {
+    final input = raw.length > maxQueryChars ? raw.substring(0, maxQueryChars) : raw;
+    var text = input.replaceAllMapped(_quoted, (m) {
       final inner = (m[1] ?? m[2] ?? m[3] ?? m[4] ?? '').toLowerCase().replaceAll(_spaces, ' ').trim();
       final cleaned = inner.replaceAll(RegExp(r'^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$', unicode: true), '');
-      if (cleaned.isNotEmpty && !phrases.contains(cleaned)) phrases.add(cleaned);
+      if (cleaned.isNotEmpty && !phrases.contains(cleaned) && phrases.length < maxPhrases) phrases.add(cleaned);
       return ' | ';
     });
 
@@ -85,7 +92,7 @@ class RuleBasedQueryParser implements QueryParser {
       final isNumber = RegExp(r'^\d+$').hasMatch(word);
       if (word.length < 2 && !isNumber) continue;
       semantic.add(word);
-      if (!keywords.contains(word)) keywords.add(word);
+      if (!keywords.contains(word) && keywords.length < maxKeywords) keywords.add(word);
     }
 
     return ParsedQuery(

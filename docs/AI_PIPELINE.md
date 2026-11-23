@@ -99,6 +99,22 @@ matches are weighted at 0.55 of a literal match and reported as
      to CLIP: on the test gallery an unrelated chat scored 0.221 and a receipt
      0.230 for “bank details”, the IBAN chat 0.264).
 
+   * **text-centric intents without text:** if the query triggers a text-centric
+     concept (password/Wi-Fi, bank details, address, phone, receipt, tickets,
+     appointment, order/tracking; not menu or trip) and no image has text
+     evidence, visual-only results also need cosine ≥ 0.27 (QA-06).
+   * **expansion-only matches:** when some image contains every query word, an
+     image matched only through expansions needs two different expansion terms
+     or one decisive term (IBAN, SWIFT, sort code, password, SSID, postcode,
+     receipt, invoice, order number, …). Ticket concepts are split (boarding
+     pass / train / concert / generic), the most specific trigger wins (QA-15).
+   * Verification also credits whole-word singular/plural matches the prefix
+     index misses (“passes” ↔ “PASS”).
+
+   Query input is capped at 256 characters, 32 keywords and 8 phrases (QA-14).
+   `SearchResponse.semanticSearchUsed` means visual search is *available* (model
+   loaded and images embedded), for every query type (QA-12).
+
    Quoted phrases are required for every result. With no evidence the response
    is empty — never the least-bad images.
 7. Near-duplicate collapse: two images are duplicates if their dHash differs in
@@ -134,6 +150,13 @@ matches are weighted at 0.55 of a literal match and reported as
   is kept). If the image vanished meanwhile, it is deleted, not counted as failed.
 * `pause()`/`resume()` act at item boundaries; `stop()` cancels (phase `idle`).
   `start()` while running returns the running sync.
+* OCR fallback renditions are written to `<cache>/ocr_tmp/`, deleted in a
+  `finally` block, and the folder (plus legacy `ocr_<n>_<n>.jpg` files) is swept
+  at the start of every run.
+* No automatic re-sync while the store setting `indexing.disabled` is `'1'`
+  (written by *Delete local index*); an explicit `start()` still runs.
+* One `debugPrint` per run with counts, elapsed time and embedding count (no ids,
+  file names or text).
 * After the first `start()`, `GalleryRepository.changes` triggers a debounced
   (3 s) re-sync while idle, or one re-sync right after the current run.
 * dHash: luma (ITU-R 601), 9×8 antialiased bilinear resize, bit = pixel brighter

@@ -269,6 +269,35 @@ void main() {
     expect(gallery.listCalls, 2);
   });
 
+  test('QA-20: no auto re-sync while indexing is disabled; explicit start still runs', () async {
+    await service.start();
+    store.settings[DefaultIndexingService.disabledSettingKey] = '1';
+    gallery.changesController.add(null);
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    expect(gallery.listCalls, 1);
+
+    await service.start();
+    expect(gallery.listCalls, 2);
+
+    store.settings[DefaultIndexingService.disabledSettingKey] = null;
+    gallery.changesController.add(null);
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    expect(gallery.listCalls, 3);
+  });
+
+  test('QA-09: leftover OCR temp files from a killed run are swept at start', () async {
+    final folder = Directory('${temp.path}/${DefaultIndexingService.ocrTempFolder}')..createSync();
+    File('${folder.path}/123_0.jpg').writeAsStringSync('x');
+    final legacy = File('${temp.path}/ocr_1700000000000_3.jpg')..writeAsStringSync('x');
+    final unrelated = File('${temp.path}/keep_me.jpg')..writeAsStringSync('x');
+    gallery.noOriginal.add('a');
+    await service.start();
+    expect(folder.existsSync(), isFalse);
+    expect(legacy.existsSync(), isFalse);
+    expect(unrelated.existsSync(), isTrue);
+    expect(store.records['a']!.ocrText, 'Alpha text');
+  });
+
   test('store failure surfaces as error phase with the message', () async {
     final failing = _FailingStore();
     service = DefaultIndexingService(

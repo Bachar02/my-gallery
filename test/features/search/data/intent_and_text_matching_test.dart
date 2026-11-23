@@ -27,6 +27,14 @@ void main() {
       expect(expander.expand(['restaurant', 'menu']).map((x) => x.concept).toSet(), {'restaurant menu'});
     });
 
+    test('specific ticket kinds win over the generic ticket concept', () {
+      expect(expander.expand(['train', 'ticket']).map((x) => x.concept).toSet(), {'train ticket'});
+      expect(expander.expand(['boarding', 'pass']).map((x) => x.text), isNot(contains('seat')));
+      expect(expander.expand(['ticket']).map((x) => x.concept).toSet(), {'ticket'});
+      final iban = expander.expand(['bank', 'details']).firstWhere((x) => x.text == 'iban');
+      expect(iban.decisive, isTrue);
+    });
+
     test('several concepts can fire', () {
       final concepts = expander.expand(['trip', 'germany', 'tickets']).map((x) => x.concept).toSet();
       expect(concepts, {'trip', 'tickets'});

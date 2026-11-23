@@ -9,6 +9,7 @@ import '../domain/intent_expansion.dart';
 import '../domain/person_mentions.dart';
 import '../domain/search_tuning.dart';
 import '../domain/text_matching.dart';
+import 'rule_based_query_parser.dart';
 
 /// Hybrid retrieval: OCR text (FTS) + visual similarity (CLIP), fused, with
 /// reliability thresholds and human-readable match reasons.
@@ -54,7 +55,7 @@ class HybridSearchEngine implements SearchEngine {
     );
     // People named in the query are required literal text and are never
     // sent to the image model (it cannot know who "Jamie" is).
-    final people = [for (final n in PersonMentions.detect(query)) if (parsed.keywords.contains(n)) n];
+    final people = [for (final n in PersonMentions.detect(_capped(query))) if (parsed.keywords.contains(n)) n];
     final visualText = [
       for (final w in parsed.semanticText.split(' '))
         if (w.isNotEmpty && !people.contains(w)) w,
@@ -67,22 +68,40 @@ class HybridSearchEngine implements SearchEngine {
       dateRange: effective.dateRange,
       kind: effective.kinds.length == 1 ? effective.kinds.first : null,
     );
-    SearchResponse respond(List<SearchResult> results, {bool semantic = false}) =>
-        SearchResponse(query: shown, results: results, elapsed: sw.elapsed, semanticSearchUsed: semantic);
+    // semanticSearchUsed reports whether visual search is AVAILABLE (model
+    // loaded and images embedded), not whether this particular query had
+    // descriptive words; the UI uses it to say "text-only search".
+    final stats = await _store.stats();
+    final semanticAvailable = await _semanticAvailable(stats);
+    SearchResponse respond(List<SearchResult> results) => SearchResponse(
+        query: shown, results: results, elapsed: sw.elapsed, semanticSearchUsed: semanticAvailable);
 
     if (!parsed.hasContent) {
       if (effective.isEmpty) return respond(const []);
       return respond(await _browse(effective));
     }
 
-    final stats = await _store.stats();
-    final visualFuture = _visualHits(shown, effective, stats);
+    final visualFuture = semanticAvailable ? _visualHits(shown, effective, stats) : Future.value(null);
     final textFuture = _textHits(shown, effective);
     final visual = await visualFuture;
     final text = await textFuture;
 
-    final results = await _rank(shown, effective, text, visual, stats, people);
-    return respond(results, semantic: visual != null);
+    final textCentric = _expander.match(shown.keywords).concepts.any((c) => c.textCentric);
+    final results = await _rank(shown, effective, text, visual, stats, people, textCentric: textCentric);
+    return respond(results);
+  }
+
+  static String _capped(String q) => q.length > RuleBasedQueryParser.maxQueryChars
+      ? q.substring(0, RuleBasedQueryParser.maxQueryChars)
+      : q;
+
+  Future<bool> _semanticAvailable(IndexStats stats) async {
+    if (stats.imagesWithEmbedding == 0) return false;
+    try {
+      return _model.isLoaded || await _model.load();
+    } catch (_) {
+      return false;
+    }
   }
 
   // ------------------------------------------------------------- retrieval
@@ -139,8 +158,9 @@ class HybridSearchEngine implements SearchEngine {
     _TextRetrieval text,
     List<VectorHit>? visual,
     IndexStats stats,
-    List<String> people,
-  ) async {
+    List<String> people, {
+    required bool textCentric,
+  }) async {
     final cands = <String, _Candidate>{};
     _Candidate cand(String id) => cands.putIfAbsent(id, () => _Candidate(id));
 
@@ -207,7 +227,7 @@ class HybridSearchEngine implements SearchEngine {
       final r = records[i];
       if (r == null) continue; // deleted since it was indexed
       final c = top[i]..record = r;
-      _verify(c);
+      _verify(c, q.keywords);
       // The name must really be a word of the recognised text (not just a
       // prefix, not only the file name).
       if (people.any((n) => !(c.literal[n]?.inOcr ?? false))) continue;
@@ -226,12 +246,31 @@ class HybridSearchEngine implements SearchEngine {
     // an expansion such as IBAN for "bank details"), an image with visual
     // evidence only must be clearly similar, not just above the floor.
     final strongText = verified.any((c) => c.textAccepted && _coversAllTerms(c, weights.keys));
+    // When some image contains every query word literally, an image that
+    // matches only through expansions must match at least
+    // [SearchTuning.minExpansionsWithFullLiteral] different expansion terms or
+    // one decisive term: one "flight" in a chat is not a boarding pass, but
+    // gate + flight + departure is, and a lone IBAN is still bank details.
+    final fullLiteral = verified.any((c) => c.textAccepted && _coversAllTerms(c, weights.keys, literalOnly: true));
+    if (fullLiteral) {
+      for (final c in verified) {
+        if (!c.textAccepted || c.literal.values.any((m) => m.exact)) continue;
+        final exact = [for (final e in c.expansions.entries) if (e.value.exact) e.key];
+        if (exact.any((e) => e.decisive)) continue;
+        if (exact.length < SearchTuning.minExpansionsWithFullLiteral) c.textAccepted = false;
+      }
+    }
+    // Text-centric intents (password, bank details, ticket...) with no text
+    // evidence anywhere: CLIP scores text-like screenshots ~0.2 for these, so
+    // a visual-only result needs the strong floor.
+    final anyText = verified.any((c) => c.textAccepted);
+    final strictVisual = strongText || (textCentric && !anyText);
     final accepted = <_Candidate>[];
     for (final c in verified) {
       if (!c.textAccepted) {
         final sim = c.visualSimilarity;
         if (sim == null) continue;
-        if (strongText && sim < SearchTuning.visualOnlyFloorWithStrongText) continue;
+        if (strictVisual && sim < SearchTuning.visualOnlyFloorWithStrongText) continue;
       }
       c.score = (c.textAccepted ? SearchTuning.textWeight * c.textScore : 0) +
           (c.visualSimilarity != null ? SearchTuning.visualWeight * c.visualScore : 0);
@@ -248,9 +287,10 @@ class HybridSearchEngine implements SearchEngine {
 
   /// Every literal term/phrase matched as a whole word, or covered by an
   /// exactly matched expansion of a concept containing it.
-  static bool _coversAllTerms(_Candidate c, Iterable<String> keys) {
+  static bool _coversAllTerms(_Candidate c, Iterable<String> keys, {bool literalOnly = false}) {
     for (final k in keys) {
       if (c.literal[k]?.exact ?? false) continue;
+      if (literalOnly) return false;
       final viaExpansion =
           c.expansions.entries.any((x) => x.value.exact && x.key.concept.split(' ').contains(k));
       if (!viaExpansion) return false;
@@ -287,10 +327,18 @@ class HybridSearchEngine implements SearchEngine {
 
   /// Checks text matches against the stored OCR text / filename: whole-word
   /// (or plural) matches keep full strength, prefix-only matches are weakened.
-  void _verify(_Candidate c) {
+  void _verify(_Candidate c, List<String> terms) {
     final r = c.record!;
     final ocrWords = TextMatching.words(r.ocrText);
     final nameWords = TextMatching.words(_filenameStem(r.image.filename));
+    // The store matches prefixes, so "passes" does not find "PASS". Credit
+    // whole-word singular/plural matches it missed, at the base strength.
+    for (final t in terms) {
+      if (c.literal.containsKey(t)) continue;
+      if (TextMatching.hasWord(ocrWords, t) || TextMatching.hasWord(nameWords, t)) {
+        c.literal[t] = _TermMatch(SearchTuning.termStrengthFloor, null);
+      }
+    }
     final ocrNorm = TextMatching.normalize(r.ocrText);
     c.hasExactText = false;
     void check(String key, _TermMatch m, {required bool isPhrase}) {

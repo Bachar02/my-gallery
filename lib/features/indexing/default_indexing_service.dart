@@ -143,14 +143,50 @@ class DefaultIndexingService implements IndexingService {
   void _onGalleryChanged() {
     if (_disposed) return;
     _debounce?.cancel();
-    _debounce = Timer(resyncDebounce, () {
+    _debounce = Timer(resyncDebounce, () async {
       if (_disposed) return;
       if (_running != null) {
         _resyncPending = true;
         return;
       }
+      // After "Delete local index" the user must re-enable indexing
+      // explicitly; gallery changes must not silently rebuild the index.
+      if (await _autoSyncDisabled()) return;
+      if (_disposed || _running != null) return;
       start();
     });
+  }
+
+  /// Store setting written by the "Delete local index" action; '1' disables
+  /// automatic re-syncs. An explicit [start] still runs (the UI checks it).
+  static const String disabledSettingKey = 'indexing.disabled';
+
+  Future<bool> _autoSyncDisabled() async {
+    try {
+      return await _store.getSetting(disabledSettingKey) == '1';
+    } catch (_) {
+      return true; // cannot tell: do not start work nobody asked for
+    }
+  }
+
+  /// OCR fallback renditions live in their own folder so leftovers from a
+  /// killed process can be swept safely.
+  static const String ocrTempFolder = 'ocr_tmp';
+
+  /// Deletes leftover OCR temp files (from a run killed mid-OCR) and files
+  /// with the pre-folder naming scheme (`ocr_<micros>_<n>.jpg`).
+  Future<void> _sweepTempFiles() async {
+    try {
+      final base = await _tempDirectory();
+      final folder = Directory(p.join(base.path, ocrTempFolder));
+      if (await folder.exists()) await folder.delete(recursive: true);
+      final legacy = RegExp(r'^ocr_\d+_\d+\.jpg$');
+      await for (final e in base.list(followLinks: false)) {
+        if (e is File && legacy.hasMatch(p.basename(e.path))) await e.delete();
+      }
+    } catch (e) {
+      debugPrint('OCR temp cleanup failed: ${e.runtimeType}');
+    }
   }
 
   void _emit(IndexingProgress p) {
@@ -173,6 +209,7 @@ class DefaultIndexingService implements IndexingService {
   Future<void> _sync() async {
     final sw = Stopwatch()..start();
     var embedded = 0;
+    await _sweepTempFiles();
     try {
       await _syncInner(onEmbedded: () => embedded++);
     } finally {
@@ -354,9 +391,11 @@ class DefaultIndexingService implements IndexingService {
     }
     final bytes = await _safe(() => _gallery.displayImage(image.id, maxSide: ocrFallbackMaxSide));
     if (bytes == null || bytes.isEmpty) return null;
-    final dir = await _tempDirectory();
-    final tmp = File(p.join(dir.path, 'ocr_${DateTime.now().microsecondsSinceEpoch}_${_tempCounter++}.jpg'));
+    final base = await _tempDirectory();
+    final dir = Directory(p.join(base.path, ocrTempFolder));
+    final tmp = File(p.join(dir.path, '${DateTime.now().microsecondsSinceEpoch}_${_tempCounter++}.jpg'));
     try {
+      await dir.create(recursive: true);
       await tmp.writeAsBytes(bytes, flush: true);
       return await _ocr.recognize(tmp);
     } catch (e) {
@@ -365,6 +404,9 @@ class DefaultIndexingService implements IndexingService {
     } finally {
       try {
         if (await tmp.exists()) await tmp.delete();
+        // Leave no empty folder behind either (one image at a time, so the
+        // folder is empty here unless a previous run was killed).
+        if (await dir.exists() && await dir.list().isEmpty) await dir.delete();
       } catch (_) {
         // Temp directory cleanup is best effort.
       }

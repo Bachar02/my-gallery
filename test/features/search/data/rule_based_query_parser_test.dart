@@ -260,6 +260,13 @@ void main() {
     expect(a.keywords, ['receipt']);
   });
 
+  test('QA-14: long input is capped', () {
+    final q = parse(List.generate(500, (i) => 'w$i "p$i x"').join(' '));
+    expect(q.keywords.length, lessThanOrEqualTo(RuleBasedQueryParser.maxKeywords));
+    expect(q.phrases.length, lessThanOrEqualTo(RuleBasedQueryParser.maxPhrases));
+    expect(parse('${'a' * 300} jamie').keywords, isNot(contains('jamie')), reason: 'beyond 256 chars');
+  });
+
   test('raw is preserved', () {
     expect(parse('  Red CAR ').raw, '  Red CAR ');
   });
