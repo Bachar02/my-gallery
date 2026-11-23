@@ -55,3 +55,8 @@ app.*.map.json
 # Local test fixtures generated on demand
 /tool/fixtures/out/
 
+
+# Model weights are rebuilt locally with tool/fetch_models.py + tool/install_assets.py
+# (not redistributed via git; see docs/AI_PIPELINE.md for licence notes)
+/assets/models/**/*.onnx
+

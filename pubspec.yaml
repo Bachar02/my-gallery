@@ -42,6 +42,8 @@ dependencies:
   path: ^1.9.1
   share_plus: ^13.3.1
   intl: ^0.20.3
+  flutter_onnxruntime: 1.9.0
+  image: 4.13.0
 
 dev_dependencies:
   flutter_test:
@@ -53,6 +55,9 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  integration_test:
+    sdk: flutter
+  crypto: ^3.0.8
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -64,6 +69,9 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  assets:
+    - assets/models/mobileclip_s0/
 
   # To add assets to your application, add an assets section, like this:
   # assets:
