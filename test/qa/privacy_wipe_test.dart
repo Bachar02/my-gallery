@@ -133,7 +133,5 @@ void main() {
     await store.upsert(record('secret', ocr: 'replaced text'));
     expect(await store.searchText(terms: [_ocrMarker]), isEmpty);
     expect(_filesContaining(dbPath, _ocrMarker), isEmpty, reason: 'old OCR text survived an update');
-  },
-      skip: 'Open defect (docs/QA_REPORT.md, QA-07): the previous page image stays in the -wal file '
-          'until overwritten when an image is re-indexed with different text.');
+  });
 }

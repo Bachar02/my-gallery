@@ -103,6 +103,25 @@ void main() {
     await store.nearDuplicates(records[6].perceptualHash!);
     final dupMs = sw.elapsedMicroseconds / 1000;
 
+    // Re-index batches of 100 existing images: same text (no WAL truncate)
+    // vs changed text (QA-07: one wal_checkpoint(TRUNCATE) per batch).
+    final reSame = <double>[];
+    final reChanged = <double>[];
+    for (var b = 0; b < 5; b++) {
+      final batch = records.sublist(1000 + b * 100, 1100 + b * 100);
+      sw.reset();
+      await store.upsertAll(batch);
+      reSame.add(sw.elapsedMicroseconds / 1000);
+      final changed = [
+        for (final r in batch)
+          record(r.image.id, ocr: '${r.ocrText} edited', createdAt: r.image.createdAt, kind: r.image.kind,
+              embedding: r.embedding, phash: r.perceptualHash),
+      ];
+      sw.reset();
+      await store.upsertAll(changed);
+      reChanged.add(sw.elapsedMicroseconds / 1000);
+    }
+
     final stats = await store.stats();
     sw.reset();
     await store.clearAll();
@@ -120,6 +139,8 @@ void main() {
     print('searchVector filtered median:   ${_median(filteredTimes).toStringAsFixed(2)} ms');
     print('searchText (4 parts) median:    ${_median(textTimes).toStringAsFixed(2)} ms');
     print('nearDuplicates first / warm:    ${dupFirstMs.toStringAsFixed(1)} / ${dupMs.toStringAsFixed(2)} ms');
+    print('re-index 100, same text median: ${_median(reSame).toStringAsFixed(1)} ms');
+    print('re-index 100, changed text med: ${_median(reChanged).toStringAsFixed(1)} ms (incl. WAL truncate)');
     print('clearAll (+VACUUM):             ${clearMs.toStringAsFixed(0)} ms');
 
     expect(_median(vecTimes), lessThan(50));

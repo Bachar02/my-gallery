@@ -478,6 +478,21 @@ void main() {
       await s2.close();
     });
 
+    test('WAL truncation requested during a background load runs when it finishes', () async {
+      final dir = Directory.systemTemp.createTempSync('idx_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final path = p.join(dir.path, 'walq.db');
+      final s = SqliteIndexStore(path);
+      await s.open();
+      addTearDown(s.close);
+      final rnd = Random(13);
+      await s.upsertAll([for (var i = 0; i < 2500; i++) record('$i', ocr: 'text $i', embedding: unitVector(rnd, 8))]);
+      final pending = s.searchVector(unitVector(rnd, 8), modelId: 'mobileclip_s0');
+      await s.upsert(record('5', ocr: 'changed text', embedding: unitVector(rnd, 8)));
+      await pending;
+      expect(File('$path-wal').lengthSync(), 0);
+    });
+
     test('index lazily loaded from disk after reopen', () async {
       final dir = Directory.systemTemp.createTempSync('idx_');
       addTearDown(() => dir.deleteSync(recursive: true));

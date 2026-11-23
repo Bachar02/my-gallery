@@ -75,6 +75,9 @@ class SqliteIndexStore implements IndexStore {
   /// Bumped whenever cached indices become invalid (clear, recovery, close).
   int _generation = 0;
 
+  /// A WAL truncation was requested while a background reader was active.
+  bool _walTruncatePending = false;
+
   /// Lazily loaded id -> dHash map for near-duplicate queries.
   Map<String, int>? _hashes;
 
@@ -257,10 +260,17 @@ class SqliteIndexStore implements IndexStore {
       final upImage = db.prepare(_upsertImageSql);
       final upEmb = db.prepare(_upsertEmbeddingSql);
       final delEmb = db.prepare('DELETE FROM embeddings WHERE image_id = ?');
+      final oldText = db.prepare('SELECT ocr_text, filename FROM images WHERE id = ?');
+      var textChanged = false;
       try {
         _transaction(db, () {
           for (final r in records) {
             final img = r.image;
+            if (!textChanged) {
+              final old = oldText.select([img.id]);
+              textChanged = old.isNotEmpty &&
+                  (old.first.columnAt(0) != r.ocrText || old.first.columnAt(1) != img.filename);
+            }
             upImage.execute([
               img.id,
               img.filename,
@@ -288,7 +298,13 @@ class SqliteIndexStore implements IndexStore {
         upImage.close();
         upEmb.close();
         delEmb.close();
+        oldText.close();
       }
+      // Re-indexed text replaced older text (QA-07): the old page images
+      // stay in the -wal until overwritten, so truncate it. Once per batch
+      // and only when an existing row's text changed; new rows hold nothing
+      // that needs erasing.
+      if (textChanged) _truncateWal(db);
     });
     // Only after a successful commit: mirror the change into memory.
     for (final r in records) {
@@ -655,6 +671,7 @@ class SqliteIndexStore implements IndexStore {
       }
       _loading.remove(modelId);
       _journals.remove(modelId);
+      if (_walTruncatePending && _loading.isEmpty) _run(_truncateWal);
       var ok = !workerFailed;
       if (ok && loaded != null) {
         for (final apply in journal) {
@@ -809,10 +826,16 @@ class SqliteIndexStore implements IndexStore {
   /// mode the previous page images stay in the -wal side file until it is
   /// overwritten. After deleting private data (vanished images, recent
   /// searches) checkpoint and truncate the WAL so no copy survives there.
-  /// Best effort: a concurrent reader (background vector load) can make the
-  /// truncation partial; it then happens on a later call.
+  /// While a background vector load is reading, a TRUNCATE checkpoint would
+  /// wait on it (up to busy_timeout, on the UI isolate), so the truncation
+  /// is deferred until the load finishes.
   void _truncateWal(Database db) {
     if (_path == null) return;
+    if (_loading.isNotEmpty) {
+      _walTruncatePending = true;
+      return;
+    }
+    _walTruncatePending = false;
     try {
       db.select('PRAGMA wal_checkpoint(TRUNCATE)');
     } on SqliteException catch (e) {
