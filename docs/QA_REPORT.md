@@ -241,3 +241,26 @@ quoting them publicly.
 * Accessibility with TalkBack, and font scale 2.0 (1.3 tested).
 * Very large galleries (> 5,000 real images) on a device: memory use of the vector index
   (~20 MB at 10k).
+
+## Resolution update (2026-11-23)
+
+Fixed after this report and verified with `flutter test` (365 passing) and a release build on
+the emulator (527 images indexed, 0 failures, no crashes, no Glide URI logging):
+
+| Defect | Status |
+|---|---|
+| QA-06 Wi-Fi chip false positives | Fixed: text-centric intents need the strong visual floor; chip now returns nothing on a gallery without Wi-Fi screenshots |
+| QA-07 replaced OCR text in WAL | Fixed: WAL truncated after batches that changed text; test un-skipped |
+| QA-08 Android 10 original copies | Fixed: legacy storage on API 29 + bounded copy cache (not device-verified on API 29) |
+| QA-09 cache leftovers | Fixed: OCR temp folder and share exports swept |
+| QA-10 licences | Fixed: MobileCLIP, ONNX Runtime, ML Kit registered |
+| QA-11 Glide URI logs | Fixed for release builds (Glide log level ERROR) |
+| QA-12 visual-search notice | Fixed: reflects model availability |
+| QA-13 status card after delete | Fixed: shows "Search index deleted" with Rebuild |
+| QA-14 query length | Fixed: 256 chars / 32 keywords / 8 phrases |
+| QA-15 ticket intent precision | Fixed: boarding pass P@5 0.40 → 1.00; eval P@5 0.835 → 0.871 |
+| QA-18 dark splash step | Fixed: splash matches first frame (#0E1415) |
+| QA-19 themed icon | Fixed: dedicated line-art monochrome drawable |
+| QA-20 delete not durable | Fixed: `indexing.disabled` honoured by app start, resume and auto-resync |
+| QA-16 typo tolerance | Open (v1 limitation) |
+| QA-17 partial matches | By design |

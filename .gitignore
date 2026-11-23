@@ -65,3 +65,7 @@ app.*.map.json
 /.device_free
 *.log
 
+
+# Built APKs for manual installs
+/dist/
+
