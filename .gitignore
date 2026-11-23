@@ -60,3 +60,8 @@ app.*.map.json
 # (not redistributed via git; see docs/AI_PIPELINE.md for licence notes)
 /assets/models/**/*.onnx
 
+
+# Local coordination marker / logs
+/.device_free
+*.log
+

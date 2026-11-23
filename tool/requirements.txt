@@ -1,0 +1,8 @@
+# Python 3.13. Used only at development time (model export/validation, test fixtures);
+# nothing here ships in the app.
+numpy==2.5.5
+onnx==1.23.2
+onnxruntime==1.32.0
+pillow==13.0.0
+tokenizers==0.23.3
+huggingface_hub==2.4.0
