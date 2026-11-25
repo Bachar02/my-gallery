@@ -69,3 +69,6 @@ app.*.map.json
 # Built APKs for manual installs
 /dist/
 
+
+# Evaluation corpus images (tool/eval/make_screens.py, tool/eval/fetch_photos.py)
+/tool/eval/.data/
