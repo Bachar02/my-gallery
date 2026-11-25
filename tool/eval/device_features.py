@@ -49,6 +49,7 @@ def main() -> None:
                             cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                             encoding="utf-8", errors="replace")
     pushed = False
+    tmp = DATA / "device_features.json"
     staging = DATA / "device_in"
     for line in test.stdout:
         sys.stdout.write(line)
@@ -66,12 +67,15 @@ def main() -> None:
             subprocess.run(adb + ["shell", "touch", f"{REMOTE}/in/READY"], check=True)
             pushed = True
             print(f"[driver] pushed {len(files)} images", flush=True)
+        if "[eval] done" in line:
+            # Pull now: flutter test uninstalls the app (and its files) at the end.
+            subprocess.run(adb + ["pull", f"{REMOTE}/out/features.json", str(tmp)], check=True)
+            subprocess.run(adb + ["shell", "touch", f"{REMOTE}/out/PULLED"], check=False)
+            print("[driver] pulled features", flush=True)
     code = test.wait()
     if code != 0:
         raise SystemExit(f"device test failed ({code})")
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    tmp = DATA / "device_features.json"
-    subprocess.run(adb + ["pull", f"{REMOTE}/out/features.json", str(tmp)], check=True)
     data = json.loads(tmp.read_text(encoding="utf-8"))
     OUT.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n",
                    encoding="utf-8")

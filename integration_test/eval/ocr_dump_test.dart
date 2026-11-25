@@ -23,7 +23,7 @@ void main() {
   test('dump OCR layout and face counts of the evaluation corpus', () async {
     final base = (await getExternalStorageDirectory())!;
     final input = Directory(p.join(base.path, 'eval', 'in'));
-    final out = Directory(p.join(base.path, 'eval', 'out'))..createSync(recursive: true);
+    final out = Directory(p.join(base.path, 'eval', 'out'));
     debugPrint('[eval] waiting for ${input.path}/READY');
     final ready = File(p.join(input.path, 'READY'));
     final deadline = DateTime.now().add(const Duration(minutes: 20));
@@ -60,10 +60,18 @@ void main() {
       };
       if (i % 50 == 0) debugPrint('[eval] $i/${files.length}');
     }
+    out.createSync(recursive: true); // the driver clears eval/ when it pushes
     File(p.join(out.path, 'features.json')).writeAsStringSync(jsonEncode(result));
     File(p.join(out.path, 'DONE')).writeAsStringSync('${files.length}');
     debugPrint('[eval] done ${files.length} images; avg OCR ${ocrMs ~/ files.length} ms, '
         'avg face count ${faceMs ~/ files.length} ms');
+    // flutter test uninstalls the app afterwards, which deletes this
+    // directory: wait until the driver has pulled the result.
+    final pulled = File(p.join(out.path, 'PULLED'));
+    final pullDeadline = DateTime.now().add(const Duration(minutes: 5));
+    while (!pulled.existsSync() && DateTime.now().isBefore(pullDeadline)) {
+      await Future<void>.delayed(const Duration(seconds: 1));
+    }
     await ocr.dispose();
     await faces.dispose();
   }, timeout: const Timeout(Duration(minutes: 60)));
