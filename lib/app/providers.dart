@@ -1,7 +1,7 @@
 /// Dependency wiring: binds the domain interfaces to implementations.
 ///
-/// OWNERSHIP: Team Lead. Feature code depends on these providers, never on
-/// concrete implementation classes. Tests override them with fakes.
+/// Feature code depends on these providers, never on concrete
+/// implementation classes. Tests override them with fakes.
 library;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -13,7 +13,7 @@ import '../features/gallery/data/photo_manager_gallery_repository.dart';
 import '../features/indexing/default_indexing_service.dart';
 import '../features/search/data/hybrid_search_engine.dart';
 import '../features/search/data/rule_based_query_parser.dart';
-import '../ml/clip/mobile_clip_model.dart';
+import '../ml/siglip/siglip_model.dart';
 import '../ml/face/mlkit_face_counter.dart';
 import '../ml/ocr/mlkit_ocr_engine.dart';
 
@@ -46,7 +46,7 @@ final faceCounterProvider = Provider<FaceCounter>((ref) {
 /// One shared model instance: indexing embeds images, search embeds queries.
 /// Loaded lazily by whichever needs it first; failure means text-only mode.
 final semanticModelProvider = Provider<SemanticModel>((ref) {
-  final model = MobileClipModel();
+  final model = SiglipModel();
   ref.onDispose(model.dispose);
   return model;
 });

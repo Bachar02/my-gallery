@@ -1,0 +1,7 @@
+SigLIP base patch16-224 (Google), image and text encoders.
+Weights: google/siglip-base-patch16-224, Apache License 2.0
+(https://huggingface.co/google/siglip-base-patch16-224).
+ONNX export: Xenova/siglip-base-patch16-224 (Hugging Face).
+Modifications: transformer weight matrices quantised to int8 with ONNX Runtime
+dynamic quantisation (tool/quantize_siglip.py); vocabulary converted from
+tokenizer.json to a tab-separated list (tool/install_assets.py).

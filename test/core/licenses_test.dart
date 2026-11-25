@@ -17,13 +17,13 @@ class _Bundle extends CachingAssetBundle {
 }
 
 void main() {
-  test('includes MobileCLIP texts, ONNX Runtime and ML Kit', () async {
+  test('includes SigLIP notice and licence, ONNX Runtime and ML Kit', () async {
     final entries = await appLicenses(_Bundle({
-      'assets/models/mobileclip_s0/LICENSE_APPLE_AMLR.txt': 'Apple AMLR text',
-      'assets/models/mobileclip_s0/LICENSE_XENOVA_EXPORT.txt': 'Xenova export text',
+      'assets/models/siglip_b16/NOTICE.txt': 'SigLIP notice',
+      'assets/models/siglip_b16/LICENSE_APACHE_2.0.txt': 'Apache licence text',
     })).toList();
     final byName = {for (final e in entries) e.packages.single: e.paragraphs.map((p) => p.text).join('\n')};
-    expect(byName['MobileCLIP'], allOf(contains('Apple AMLR text'), contains('Xenova export text')));
+    expect(byName['SigLIP (Google)'], allOf(contains('SigLIP notice'), contains('Apache licence text')));
     expect(byName['ONNX Runtime'], contains('MIT License'));
     expect(byName['Google ML Kit'], contains('https://developers.google.com/ml-kit/terms'));
   });

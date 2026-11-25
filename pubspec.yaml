@@ -72,7 +72,7 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/models/mobileclip_s0/
+    - assets/models/siglip_b16/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

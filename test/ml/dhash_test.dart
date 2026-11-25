@@ -7,7 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 
 void main() {
-  Uint8List fixture(String name) => File('test/ml/fixtures/clip_images/$name.png').readAsBytesSync();
+  Uint8List fixture(String name) => File('test/ml/fixtures/reference_images/$name.png').readAsBytesSync();
 
   test('identical images hash identically; re-encoding and scaling barely change it', () {
     final png = fixture('red_car');

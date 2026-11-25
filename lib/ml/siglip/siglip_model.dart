@@ -9,49 +9,51 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../../domain/interfaces.dart';
-import 'clip_image_preprocessor.dart';
-import 'clip_tokenizer.dart';
+import 'siglip_image_preprocessor.dart';
+import 'siglip_tokenizer.dart';
 import 'vector_ops.dart';
 
-/// Bundled model files. Sizes are checked by `test/ml/mobile_clip_assets_test.dart`
-/// and used to detect stale or truncated copies in the app-support directory.
-abstract final class MobileClipAssets {
-  static const String dir = 'assets/models/mobileclip_s0/';
-  static const String vision = '${dir}mobileclip_s0_vision_fp16w.onnx';
-  static const int visionBytes = 22866566;
-  static const String text = '${dir}mobileclip_s0_text_w8.onnx';
-  static const int textBytes = 42896411;
-  static const String merges = '${dir}bpe_merges.txt';
+/// Bundled model files (built by tool/install_assets.py). Sizes are checked
+/// by `test/ml/siglip_assets_test.dart` and used to detect stale or truncated
+/// copies in the app-support directory.
+abstract final class SiglipAssets {
+  static const String dir = 'assets/models/siglip_b16/';
+  static const String vision = '${dir}siglip_b16_vision_int8.onnx';
+  static const int visionBytes = 115852766;
+  static const String text = '${dir}siglip_b16_text_int8.onnx';
+  static const int textBytes = 111622590;
+  static const String vocab = '${dir}spiece_vocab.tsv';
 }
 
-/// MobileCLIP-S0 image/text encoder running on ONNX Runtime (CPU).
+/// Google SigLIP base (patch 16, 224 px; Apache-2.0) image and text encoders
+/// on ONNX Runtime (CPU), int8 transformer weights (tool/quantize_siglip.py).
 ///
-/// * Image: thumbnail bytes -> [ClipImagePreprocessor] (background isolate)
-///   -> vision encoder -> 512-d L2-normalised embedding.
-/// * Text: [ClipTokenizer] (77 tokens) -> text encoder -> 512-d embedding.
+/// * Image: thumbnail bytes -> [SiglipImagePreprocessor] (background
+///   isolate) -> vision encoder -> 768-d L2-normalised embedding.
+/// * Text: [SiglipTokenizer] (64 tokens) -> text encoder -> 768-d embedding.
 ///
 /// ONNX Runtime needs file paths, so the models are copied once from the APK
 /// assets to the app-support directory (not the cache, which Android may
 /// clear). Inference runs on the plugin's background thread; calls are
 /// serialised so at most one inference is in flight.
-class MobileClipModel implements SemanticModel {
-  MobileClipModel({
+class SiglipModel implements SemanticModel {
+  SiglipModel({
     AssetBundle? bundle,
     Future<Directory> Function()? modelDirectory,
-    this.visionThreads = 2,
+    this.visionThreads = 4,
     this.textThreads = 2,
   })  : _bundle = bundle ?? rootBundle,
         _modelDirectory = modelDirectory ?? _defaultModelDirectory;
 
-  static const String kModelId = 'mobileclip_s0';
-  static const int kDimension = 512;
+  static const String kModelId = 'siglip_b16';
+  static const int kDimension = 768;
 
   final AssetBundle _bundle;
   final Future<Directory> Function() _modelDirectory;
   final int visionThreads;
   final int textThreads;
 
-  ClipTokenizer? _tokenizer;
+  SiglipTokenizer? _tokenizer;
   OrtSession? _vision;
   OrtSession? _text;
   Future<bool>? _loading;
@@ -79,11 +81,12 @@ class MobileClipModel implements SemanticModel {
   Future<bool> _load() async {
     final sw = Stopwatch()..start();
     try {
-      final mergesText = await _bundle.loadString(MobileClipAssets.merges, cache: false);
-      final tokenizer = await _buildTokenizer(mergesText);
+      final vocab = await _bundle.loadString(SiglipAssets.vocab, cache: false);
+      final tokenizer = await _buildTokenizer(vocab);
       final dir = await _modelDirectory();
-      final visionPath = await _materialize(dir, MobileClipAssets.vision, MobileClipAssets.visionBytes);
-      final textPath = await _materialize(dir, MobileClipAssets.text, MobileClipAssets.textBytes);
+      await _removeStale(dir.parent);
+      final visionPath = await _materialize(dir, SiglipAssets.vision, SiglipAssets.visionBytes);
+      final textPath = await _materialize(dir, SiglipAssets.text, SiglipAssets.textBytes);
 
       final ort = OnnxRuntime();
       final vision = await ort.createSession(visionPath,
@@ -105,11 +108,11 @@ class MobileClipModel implements SemanticModel {
       _text = text;
       _loaded = true;
       lastLoadError = null;
-      debugPrint('MobileClipModel loaded in ${sw.elapsedMilliseconds} ms');
+      debugPrint('SiglipModel loaded in ${sw.elapsedMilliseconds} ms');
       return true;
     } catch (e) {
       lastLoadError = e.toString();
-      debugPrint('MobileClipModel unavailable, text-only search: $e');
+      debugPrint('SiglipModel unavailable, text-only search: ${e.runtimeType}');
       return false;
     }
   }
@@ -131,12 +134,25 @@ class MobileClipModel implements SemanticModel {
     return file.path;
   }
 
+  /// Model copies of earlier app versions (other model ids) are deleted so
+  /// they do not keep using storage.
+  static Future<void> _removeStale(Directory modelsRoot) async {
+    try {
+      if (!await modelsRoot.exists()) return;
+      await for (final e in modelsRoot.list(followLinks: false)) {
+        if (e is Directory && p.basename(e.path) != kModelId) await e.delete(recursive: true);
+      }
+    } catch (_) {
+      // Best effort.
+    }
+  }
+
   // Static so the isolate closures capture nothing but their argument.
-  static Future<ClipTokenizer> _buildTokenizer(String merges) =>
-      Isolate.run(() => ClipTokenizer.fromMerges(merges));
+  static Future<SiglipTokenizer> _buildTokenizer(String vocab) =>
+      Isolate.run(() => SiglipTokenizer.fromVocab(vocab));
 
   static Future<Float32List> _prepareImage(Uint8List bytes) =>
-      Isolate.run(() => ClipImagePreprocessor.tensorFromEncoded(bytes));
+      Isolate.run(() => SiglipImagePreprocessor.tensorFromEncoded(bytes));
 
   static Future<Directory> _defaultModelDirectory() async {
     final support = await getApplicationSupportDirectory();
@@ -150,8 +166,8 @@ class MobileClipModel implements SemanticModel {
     return _serial(() => _run(
           _vision!,
           'pixel_values',
-          () => OrtValue.fromList(tensor, const [1, 3, ClipImagePreprocessor.size, ClipImagePreprocessor.size]),
-          'image_embeds',
+          () => OrtValue.fromList(tensor, const [1, 3, SiglipImagePreprocessor.size, SiglipImagePreprocessor.size]),
+          'pooler_output',
         ));
   }
 
@@ -162,8 +178,8 @@ class MobileClipModel implements SemanticModel {
     return _serial(() => _run(
           _text!,
           'input_ids',
-          () => OrtValue.fromList(ids, const [1, ClipTokenizer.contextLength]),
-          'text_embeds',
+          () => OrtValue.fromList(ids, const [1, SiglipTokenizer.contextLength]),
+          'pooler_output',
         ));
   }
 
@@ -177,7 +193,8 @@ class MobileClipModel implements SemanticModel {
     Map<String, OrtValue>? outputs;
     try {
       outputs = await session.run({inputName: input});
-      final out = outputs[outputName] ?? outputs.values.first;
+      final out = outputs[outputName];
+      if (out == null) throw StateError('Model output $outputName missing: ${outputs.keys}');
       final values = await out.asFlattenedList();
       if (values.length != kDimension) {
         throw StateError('Model returned ${values.length} values, expected $kDimension');
@@ -200,7 +217,7 @@ class MobileClipModel implements SemanticModel {
   }
 
   void _ensureLoaded() {
-    if (!_loaded) throw StateError('MobileClipModel.load() has not completed successfully');
+    if (!_loaded) throw StateError('SiglipModel.load() has not completed successfully');
   }
 
   @override

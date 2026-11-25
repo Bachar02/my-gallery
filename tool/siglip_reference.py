@@ -1,20 +1,20 @@
-"""Reference outputs for the on-device MobileCLIP implementation.
+"""Reference outputs for the on-device SigLIP implementation.
 
-Runs the exact ONNX files bundled in assets/models/mobileclip_s0 with desktop
+Runs the exact ONNX files bundled in assets/models/siglip_b16 with desktop
 onnxruntime and writes fixtures the Dart code is tested against:
 
-  test/ml/fixtures/clip_tokenizer_cases.json   text -> 77 token ids (HF tokenizer)
-  test/ml/fixtures/clip_images/*.png           small test images (CC0 / generated)
-  test/ml/fixtures/clip_preprocess.json        pixel tensor samples per image
-  test/ml/fixtures/clip_embeddings.json        image/text embeddings + similarities
-  integration_test/ml/clip_fixtures.dart       the same data for the on-device test
+  test/ml/fixtures/siglip_tokenizer_cases.json  text -> 64 token ids (HF tokenizer)
+  test/ml/fixtures/reference_images/*.png       small test images (CC0 / generated)
+  test/ml/fixtures/siglip_preprocess.json       pixel tensor checks per image
+  test/ml/fixtures/siglip_embeddings.json       image/text embeddings + similarities
+  integration_test/ml/siglip_fixtures.dart      the same data for the on-device test
 
 Usage (from the repo root, inside the tool venv):
-  tool/.venv/Scripts/python -I tool/clip_reference.py [--fp32-vision PATH]
+  tool/.venv/Scripts/python -I tool/siglip_reference.py [--fp32-vision PATH]
 
-Preprocessing mirrors preprocessor_config.json: RGB, resize so the shortest
-edge is 256 (PIL bilinear, antialiased), center crop 256x256, scale to [0,1],
-no mean/std normalisation, CHW float32.
+Preprocessing mirrors preprocessor_config.json: RGB, resize to 224x224 (PIL
+bicubic, antialiased, aspect ratio not kept), scale to [0,1], normalise with
+mean 0.5 / std 0.5, CHW float32.
 """
 import argparse
 import base64
@@ -30,17 +30,18 @@ from PIL import Image, ImageDraw, ImageFont
 from tokenizers import Tokenizer
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-MODEL_DIR = os.path.join(ROOT, "assets", "models", "mobileclip_s0")
+MODEL_DIR = os.path.join(ROOT, "assets", "models", "siglip_b16")
 SRC_IMAGES = os.path.join(ROOT, "tool", ".cache", "images")
 FIX_DIR = os.path.join(ROOT, "test", "ml", "fixtures")
-IMG_FIX_DIR = os.path.join(FIX_DIR, "clip_images")
-IT_DART = os.path.join(ROOT, "integration_test", "ml", "clip_fixtures.dart")
+IMG_FIX_DIR = os.path.join(FIX_DIR, "reference_images")
+IT_DART = os.path.join(ROOT, "integration_test", "ml", "siglip_fixtures.dart")
 
-SIZE = 256
-CONTEXT = 77
+THUMB = 256
+SIZE = 224
+CONTEXT = 64
 
 # CC0 / public-domain Wikimedia Commons photos (330 px thumbnails), see
-# test/ml/fixtures/clip_images/SOURCES.md.
+# test/ml/fixtures/reference_images/SOURCES.md.
 PHOTOS = ["red_car", "cat", "menu", "beach"]
 
 TEXTS = [
@@ -70,21 +71,12 @@ TOKENIZER_CASES = TEXTS + [
 
 
 def preprocess(img: Image.Image) -> np.ndarray:
-    img = img.convert("RGB")
-    w, h = img.size
-    short, long = (w, h) if w <= h else (h, w)
-    new_long = int(SIZE * long / short)
-    nw, nh = (SIZE, new_long) if w <= h else (new_long, SIZE)
-    img = img.resize((nw, nh), resample=Image.BILINEAR)
-    left = (nw - SIZE) // 2
-    top = (nh - SIZE) // 2
-    img = img.crop((left, top, left + SIZE, top + SIZE))
-    arr = np.asarray(img, dtype=np.uint8)
-    return arr
+    img = img.convert("RGB").resize((SIZE, SIZE), resample=Image.BICUBIC)
+    return np.asarray(img, dtype=np.uint8)
 
 
 def to_tensor(arr_u8: np.ndarray) -> np.ndarray:
-    return (arr_u8.astype(np.float32) / 255.0).transpose(2, 0, 1)[None]
+    return ((arr_u8.astype(np.float32) / 255.0 - 0.5) / 0.5).transpose(2, 0, 1)[None]
 
 
 def l2n(v):
@@ -131,7 +123,7 @@ def build_images():
     for name in PHOTOS:
         src = Image.open(os.path.join(SRC_IMAGES, name + ".jpg")).convert("RGB")
         # Match what the app feeds the model: a thumbnail whose longest side is 256.
-        scale = SIZE / max(src.size)
+        scale = THUMB / max(src.size)
         th = src.resize((round(src.size[0] * scale), round(src.size[1] * scale)), Image.BILINEAR)
         th.save(os.path.join(IMG_FIX_DIR, name + ".png"), optimize=True)
         names.append(name)
@@ -145,20 +137,20 @@ def main():
     ap.add_argument("--fp32-vision", help="optional fp32 vision model to compare compression error")
     args = ap.parse_args()
 
-    tok = Tokenizer.from_file(os.path.join(ROOT, "tool", ".cache", "mobileclip_s0", "tokenizer.json"))
+    tok = Tokenizer.from_file(os.path.join(ROOT, "tool", ".cache", "siglip_b16", "tokenizer.json"))
     tok.enable_truncation(CONTEXT)
-    tok.enable_padding(length=CONTEXT, pad_id=0, pad_token="!")
+    tok.enable_padding(length=CONTEXT, pad_id=1, pad_token="</s>")
     cases = [{"text": t, "ids": tok.encode(t).ids} for t in TOKENIZER_CASES]
     os.makedirs(FIX_DIR, exist_ok=True)
-    with open(os.path.join(FIX_DIR, "clip_tokenizer_cases.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(FIX_DIR, "siglip_tokenizer_cases.json"), "w", encoding="utf-8") as f:
         json.dump(cases, f, ensure_ascii=False, indent=0)
 
     names = build_images()
 
     so = ort.SessionOptions()
     so.intra_op_num_threads = 4
-    vis = ort.InferenceSession(os.path.join(MODEL_DIR, "mobileclip_s0_vision_fp16w.onnx"), so)
-    txt = ort.InferenceSession(os.path.join(MODEL_DIR, "mobileclip_s0_text_w8.onnx"), so)
+    vis = ort.InferenceSession(os.path.join(MODEL_DIR, "siglip_b16_vision_int8.onnx"), so)
+    txt = ort.InferenceSession(os.path.join(MODEL_DIR, "siglip_b16_text_int8.onnx"), so)
     vis32 = ort.InferenceSession(args.fp32_vision, so) if args.fp32_vision else None
 
     pre = {}
@@ -173,10 +165,10 @@ def main():
             "samples": [[int(i), int(chw[i])] for i in range(0, chw.size, 997)],
         }
         x = to_tensor(arr)
-        e = vis.run(None, {"pixel_values": x})[0][0]
+        e = vis.run(["pooler_output"], {"pixel_values": x})[0][0]
         img_emb[n] = l2n(e)
         if vis32 is not None:
-            e32 = l2n(vis32.run(None, {"pixel_values": x})[0][0])
+            e32 = l2n(vis32.run(["pooler_output"], {"pixel_values": x})[0][0])
             print(f"bundled vs fp32 vision cosine [{n}]: {float(img_emb[n] @ e32):.4f}")
     t_img = (time.perf_counter() - t0) / len(names)
 
@@ -184,7 +176,7 @@ def main():
     txt_emb = {}
     for t in TEXTS:
         ids = np.array([tok.encode(t).ids], dtype=np.int64)
-        txt_emb[t] = l2n(txt.run(None, {"input_ids": ids})[0][0])
+        txt_emb[t] = l2n(txt.run(["pooler_output"], {"input_ids": ids})[0][0])
     t_txt = (time.perf_counter() - t0) / len(TEXTS)
 
     sims = {n: {t: float(img_emb[n] @ txt_emb[t]) for t in TEXTS} for n in names}
@@ -194,15 +186,15 @@ def main():
         print(f"{n:>16}" + " ".join(f"{sims[n][t]:14.3f}" for t in TEXTS))
     print(f"\ndesktop latency: image {t_img * 1000:.1f} ms, text {t_txt * 1000:.1f} ms")
 
-    with open(os.path.join(FIX_DIR, "clip_preprocess.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(FIX_DIR, "siglip_preprocess.json"), "w", encoding="utf-8") as f:
         json.dump(pre, f, indent=1)
     emb = {
-        "model": "mobileclip_s0 (Xenova ONNX export, weights compressed by tool/compress_weights.py)",
+        "model": "siglip_b16 (Xenova ONNX export, int8 by tool/quantize_siglip.py)",
         "images": {n: [round(float(v), 6) for v in img_emb[n]] for n in names},
         "texts": {t: [round(float(v), 6) for v in txt_emb[t]] for t in TEXTS},
         "similarity": sims,
     }
-    with open(os.path.join(FIX_DIR, "clip_embeddings.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(FIX_DIR, "siglip_embeddings.json"), "w", encoding="utf-8") as f:
         json.dump(emb, f)
 
     write_integration_fixtures(names, emb)
@@ -211,9 +203,9 @@ def main():
 def write_integration_fixtures(names, emb):
     os.makedirs(os.path.dirname(IT_DART), exist_ok=True)
     out = [
-        "// GENERATED by tool/clip_reference.py - do not edit.",
+        "// GENERATED by tool/siglip_reference.py - do not edit.",
         "// Reference embeddings computed with desktop onnxruntime on the bundled",
-        "// MobileCLIP-S0 ONNX files (assets/models/mobileclip_s0).",
+        "// SigLIP ONNX files (assets/models/siglip_b16).",
         "",
         "const Map<String, String> kFixtureImagesBase64 = {",
     ]

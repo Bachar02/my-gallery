@@ -1,5 +1,5 @@
 // End-to-end on-device flow with the real implementations: gallery
-// (MediaStore) -> DefaultIndexingService (ML Kit OCR + MobileCLIP + dHash) ->
+// (MediaStore) -> DefaultIndexingService (ML Kit OCR + SigLIP + faces + dHash) ->
 // SqliteIndexStore (temp file) -> HybridSearchEngine, checked against the
 // fixture gallery's expected answers, then delete-index and re-index.
 //
@@ -16,7 +16,7 @@ import 'package:ai_gallery/features/gallery/data/photo_manager_gallery_repositor
 import 'package:ai_gallery/features/indexing/default_indexing_service.dart';
 import 'package:ai_gallery/features/search/data/hybrid_search_engine.dart';
 import 'package:ai_gallery/features/search/data/rule_based_query_parser.dart';
-import 'package:ai_gallery/ml/clip/mobile_clip_model.dart';
+import 'package:ai_gallery/ml/siglip/siglip_model.dart';
 import 'package:ai_gallery/ml/ocr/mlkit_ocr_engine.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -41,7 +41,7 @@ void main() {
     await store.open();
     final gallery = PhotoManagerGalleryRepository();
     final ocr = MlKitOcrEngine();
-    final model = MobileClipModel();
+    final model = SiglipModel();
     final service = DefaultIndexingService(gallery: gallery, store: store, ocr: ocr, semantic: model, batchSize: 50);
     addTearDown(() async {
       await service.dispose();

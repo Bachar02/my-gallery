@@ -2,26 +2,26 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:ai_gallery/ml/clip/clip_image_preprocessor.dart';
 import 'package:ai_gallery/ml/image/rgb_image.dart';
+import 'package:ai_gallery/ml/siglip/siglip_image_preprocessor.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// Reference tensors come from Pillow via tool/clip_reference.py
-/// (shortest edge -> 256 bilinear, center crop 256, /255, CHW).
+/// Reference tensors come from Pillow via tool/siglip_reference.py
+/// (resize to 224x224 bicubic, /255, (x - 0.5) / 0.5, CHW).
 void main() {
-  final ref = (jsonDecode(File('test/ml/fixtures/clip_preprocess.json').readAsStringSync()) as Map)
+  final ref = (jsonDecode(File('test/ml/fixtures/siglip_preprocess.json').readAsStringSync()) as Map)
       .cast<String, dynamic>();
 
   for (final name in ref.keys) {
     test('tensor for $name matches the Pillow reference exactly', () {
-      final bytes = File('test/ml/fixtures/clip_images/$name.png').readAsBytesSync();
-      final rgb = ClipImagePreprocessor.resizeAndCrop(PackedImage.decodeRgb(bytes));
-      expect(rgb.width, 256);
-      expect(rgb.height, 256);
+      final bytes = File('test/ml/fixtures/reference_images/$name.png').readAsBytesSync();
+      final rgb = PackedImage.decodeRgb(bytes).resizeBicubic(224, 224);
+      expect(rgb.width, 224);
+      expect(rgb.height, 224);
 
       // CHW uint8 bytes, same layout the reference hashed.
-      final plane = 256 * 256;
+      const plane = 224 * 224;
       final chw = Uint8List(3 * plane);
       for (var i = 0; i < plane; i++) {
         chw[i] = rgb.data[i * 3];
@@ -34,7 +34,7 @@ void main() {
       }
       expect(sha256.convert(chw).toString(), r['sha256_chw_u8']);
 
-      final tensor = ClipImagePreprocessor.tensorFromEncoded(bytes);
+      final tensor = SiglipImagePreprocessor.tensorFromEncoded(bytes);
       expect(tensor.length, 3 * plane);
       final means = (r['mean_rgb'] as List).cast<double>();
       for (var c = 0; c < 3; c++) {
@@ -42,23 +42,24 @@ void main() {
         for (var i = 0; i < plane; i++) {
           sum += tensor[c * plane + i];
         }
-        expect(sum / plane, closeTo(means[c], 1e-5));
+        // Tensor values are (x/255 - 0.5) / 0.5 = 2 * mean - 1.
+        expect(sum / plane, closeTo(2 * means[c] - 1, 1e-5));
       }
     });
   }
 
-  test('values are in [0, 1] and layout is CHW', () {
-    // 2x1 image: red, blue -> upscaled to 512x256 then center-cropped.
+  test('values are in [-1, 1] and layout is CHW', () {
+    // 2x1 image: red, blue -> stretched to 224x224 (aspect ratio not kept).
     final img = PackedImage(2, 1, 3, Uint8List.fromList([255, 0, 0, 0, 0, 255]));
-    final t = ClipImagePreprocessor.tensorFromRgb(img);
-    const plane = 256 * 256;
-    expect(t.every((v) => v >= 0 && v <= 1), isTrue);
-    // Left edge of the crop is still mostly red, right edge mostly blue.
+    final t = SiglipImagePreprocessor.tensorFromRgb(img);
+    const plane = 224 * 224;
+    expect(t.every((v) => v >= -1 && v <= 1), isTrue);
+    // Left edge mostly red, right edge mostly blue.
     expect(t[0], greaterThan(t[2 * plane]));
-    expect(t[255], lessThan(t[2 * plane + 255]));
+    expect(t[223], lessThan(t[2 * plane + 223]));
   });
 
   test('undecodable bytes throw FormatException', () {
-    expect(() => ClipImagePreprocessor.tensorFromEncoded(Uint8List.fromList([1, 2, 3])), throwsFormatException);
+    expect(() => SiglipImagePreprocessor.tensorFromEncoded(Uint8List.fromList([1, 2, 3])), throwsFormatException);
   });
 }

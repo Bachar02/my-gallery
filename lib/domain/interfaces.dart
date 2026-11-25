@@ -1,7 +1,6 @@
 /// Shared module interfaces.
 ///
-/// OWNERSHIP: Team Lead. Implementations live in feature modules
-/// (see docs/ARCHITECTURE.md for who owns which implementation).
+/// Implementations live in feature modules (see docs/ARCHITECTURE.md).
 library;
 
 import 'dart:io';
@@ -75,7 +74,7 @@ class OcrException implements Exception {
   String toString() => 'OcrException: $message';
 }
 
-/// Joint image/text embedding model (MobileCLIP). Implementation: `MobileClipModel`.
+/// Joint image/text embedding model (SigLIP). Implementation: `SiglipModel`.
 abstract interface class SemanticModel {
   String get modelId;
   int get dimension;

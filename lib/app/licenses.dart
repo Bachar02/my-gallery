@@ -5,9 +5,9 @@ library;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-const _mobileClipLicenseAssets = [
-  'assets/models/mobileclip_s0/LICENSE_APPLE_AMLR.txt',
-  'assets/models/mobileclip_s0/LICENSE_XENOVA_EXPORT.txt',
+const _modelLicenseAssets = [
+  'assets/models/siglip_b16/NOTICE.txt',
+  'assets/models/siglip_b16/LICENSE_APACHE_2.0.txt',
 ];
 
 const onnxRuntimeLicense = '''MIT License
@@ -32,12 +32,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.''';
 
-const mlKitTerms = '''Google ML Kit (on-device text recognition)
+const mlKitTerms = '''Google ML Kit (on-device text recognition and face detection)
 
 Use of ML Kit is subject to the ML Kit Terms of Service:
 https://developers.google.com/ml-kit/terms
 
-Text recognition runs entirely on this device with a bundled model.''';
+Text recognition and face detection run entirely on this device with bundled
+models. Face detection only counts faces; it does not identify anyone.''';
 
 bool _registered = false;
 
@@ -51,17 +52,17 @@ void registerAppLicenses({AssetBundle? bundle}) {
 
 /// The extra licence entries (exposed for testing).
 Stream<LicenseEntry> appLicenses(AssetBundle bundle) async* {
-  final clipTexts = <String>[];
-  for (final asset in _mobileClipLicenseAssets) {
+  final modelTexts = <String>[];
+  for (final asset in _modelLicenseAssets) {
     try {
       final text = (await bundle.loadString(asset)).trim();
-      if (text.isNotEmpty) clipTexts.add(text);
+      if (text.isNotEmpty) modelTexts.add(text);
     } catch (e) {
       debugPrint('Licence asset not found: $asset');
     }
   }
-  if (clipTexts.isNotEmpty) {
-    yield LicenseEntryWithLineBreaks(const ['MobileCLIP'], clipTexts.join('\n\n'));
+  if (modelTexts.isNotEmpty) {
+    yield LicenseEntryWithLineBreaks(const ['SigLIP (Google)'], modelTexts.join('\n\n'));
   }
   yield const LicenseEntryWithLineBreaks(['ONNX Runtime'], onnxRuntimeLicense);
   yield const LicenseEntryWithLineBreaks(['Google ML Kit'], mlKitTerms);

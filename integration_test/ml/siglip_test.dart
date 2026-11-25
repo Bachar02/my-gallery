@@ -1,13 +1,13 @@
-// On-device checks for the ML stack: MobileCLIP via ONNX Runtime must
-// reproduce the desktop reference embeddings (tool/clip_reference.py), and
+// On-device checks for the ML stack: SigLIP via ONNX Runtime must
+// reproduce the desktop reference embeddings (tool/siglip_reference.py), and
 // ML Kit OCR must read rendered text. Also prints latencies.
 //
-// Run: flutter test integration_test/ml/clip_test.dart -d <device>
+// Run: flutter test integration_test/ml/siglip_test.dart -d <device>
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:ai_gallery/ml/clip/mobile_clip_model.dart';
-import 'package:ai_gallery/ml/clip/vector_ops.dart';
+import 'package:ai_gallery/ml/siglip/siglip_model.dart';
+import 'package:ai_gallery/ml/siglip/vector_ops.dart';
 import 'package:ai_gallery/ml/ocr/mlkit_ocr_engine.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -15,18 +15,18 @@ import 'package:image/image.dart' as img;
 import 'package:integration_test/integration_test.dart';
 import 'package:path_provider/path_provider.dart';
 
-import 'clip_fixtures.dart';
+import 'siglip_fixtures.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  final model = MobileClipModel();
+  final model = SiglipModel();
 
   setUpAll(() async {
     final sw = Stopwatch()..start();
     final ok = await model.load();
     debugPrint('[ml-bench] model load: ${sw.elapsedMilliseconds} ms');
-    expect(ok, isTrue, reason: 'MobileClipModel.load failed: ${model.lastLoadError}');
+    expect(ok, isTrue, reason: 'SiglipModel.load failed: ${model.lastLoadError}');
   });
 
   tearDownAll(() => model.dispose());
@@ -34,7 +34,7 @@ void main() {
   test('image embeddings match the desktop reference (cosine > 0.99)', () async {
     for (final entry in kFixtureImagesBase64.entries) {
       final emb = await model.embedImage(base64Decode(entry.value));
-      expect(emb.length, 512);
+      expect(emb.length, SiglipModel.kDimension);
       final cos = cosine(emb, kExpectedImageEmbeddings[entry.key]!);
       debugPrint('[ml-bench] image ${entry.key}: cosine to reference ${cos.toStringAsFixed(5)}');
       expect(cos, greaterThan(0.99), reason: entry.key);

@@ -90,18 +90,34 @@ class PackedImage {
   /// including its fixed-point arithmetic and the horizontal-then-vertical
   /// pass order, so results match Pillow (and thus the Python reference
   /// preprocessing) exactly.
-  PackedImage resizeBilinear(int newWidth, int newHeight) {
+  PackedImage resizeBilinear(int newWidth, int newHeight) => _resize(newWidth, newHeight, _Filter.bilinear);
+
+  /// Bicubic resampling (Pillow `resample=BICUBIC`, a = -0.5, support 2),
+  /// with the same fixed-point 8-bit path and pass order as Pillow.
+  PackedImage resizeBicubic(int newWidth, int newHeight) => _resize(newWidth, newHeight, _Filter.bicubic);
+
+  /// Pass order as in Pillow (`ImagingResampleInner`, Pillow >= 11): the
+  /// vertical pass goes first when it removes more than twice as many rows
+  /// as the horizontal pass removes columns. Intermediate results are
+  /// rounded to 8 bits, so the order changes the output.
+  PackedImage _resize(int newWidth, int newHeight, _Filter filter) {
     var cur = this;
-    if (newWidth != width) cur = cur._pass(newWidth, horizontal: true);
-    if (newHeight != height) cur = cur._pass(newHeight, horizontal: false);
+    final verticalFirst = height - newHeight > 0 && height - newHeight > (width - newWidth) * 2;
+    if (verticalFirst) {
+      if (newHeight != height) cur = cur._pass(newHeight, horizontal: false, filter: filter);
+      if (newWidth != width) cur = cur._pass(newWidth, horizontal: true, filter: filter);
+    } else {
+      if (newWidth != width) cur = cur._pass(newWidth, horizontal: true, filter: filter);
+      if (newHeight != height) cur = cur._pass(newHeight, horizontal: false, filter: filter);
+    }
     return cur;
   }
 
   static const int _precisionBits = 32 - 8 - 2;
 
-  PackedImage _pass(int outSize, {required bool horizontal}) {
+  PackedImage _pass(int outSize, {required bool horizontal, required _Filter filter}) {
     final inSize = horizontal ? width : height;
-    final coeffs = _Coeffs.bilinear(inSize, outSize);
+    final coeffs = _Coeffs.compute(inSize, outSize, filter);
     final outW = horizontal ? outSize : width;
     final outH = horizontal ? height : outSize;
     final out = Uint8List(outW * outH * channels);
@@ -158,12 +174,11 @@ class _Coeffs {
   final Int32List count;
   final Int32List k;
 
-  /// Pillow `precompute_coeffs` + `normalize_coeffs_8bpc` for the bilinear
-  /// filter (support 1.0).
-  factory _Coeffs.bilinear(int inSize, int outSize) {
+  /// Pillow `precompute_coeffs` + `normalize_coeffs_8bpc`.
+  factory _Coeffs.compute(int inSize, int outSize, _Filter filter) {
     final scale = inSize / outSize;
     final filterScale = math.max(scale, 1.0);
-    final support = 1.0 * filterScale;
+    final support = filter.support * filterScale;
     final ksize = support.ceil() * 2 + 1;
     final mins = Int32List(outSize);
     final counts = Int32List(outSize);
@@ -179,8 +194,7 @@ class _Coeffs {
       xmax -= xmin;
       var ww = 0.0;
       for (var x = 0; x < xmax; x++) {
-        var t = ((x + xmin - center + 0.5) * ss).abs();
-        final w = t < 1.0 ? 1.0 - t : 0.0;
+        final w = filter.weight((x + xmin - center + 0.5) * ss);
         pre[x] = w;
         ww += w;
       }
@@ -193,5 +207,27 @@ class _Coeffs {
       counts[xx] = xmax;
     }
     return _Coeffs(ksize, mins, counts, kk);
+  }
+}
+
+/// Pillow's resampling filters (`libImaging/Resample.c`).
+enum _Filter {
+  bilinear(1.0),
+  bicubic(2.0);
+
+  const _Filter(this.support);
+  final double support;
+
+  double weight(double x) {
+    final t = x.abs();
+    switch (this) {
+      case _Filter.bilinear:
+        return t < 1.0 ? 1.0 - t : 0.0;
+      case _Filter.bicubic:
+        const a = -0.5;
+        if (t < 1.0) return ((a + 2.0) * t - (a + 3.0)) * t * t + 1;
+        if (t < 2.0) return (((t - 5) * t + 8) * t - 4) * a;
+        return 0.0;
+    }
   }
 }
