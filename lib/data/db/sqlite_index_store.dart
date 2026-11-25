@@ -18,6 +18,7 @@ import 'package:sqlite3/sqlite3.dart';
 import '../../domain/interfaces.dart';
 import '../../domain/models.dart';
 import 'fts_query.dart';
+import 'layout_codec.dart';
 import 'schema.dart';
 import 'vector_loader.dart';
 import 'vector_index.dart';
@@ -226,8 +227,10 @@ class SqliteIndexStore implements IndexStore {
   static const String _upsertImageSql = '''
     INSERT INTO images (id, filename, relative_path, mime_type, width, height,
                         created_at_ms, modified_at_ms, kind, ocr_text, phash,
-                        indexed_at_ms, pipeline_version)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        indexed_at_ms, pipeline_version, ocr_layout, screen_type,
+                        screen_conf, source_app, chat_title, chat_group, chat_body,
+                        face_count)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (id) DO UPDATE SET
       filename = excluded.filename,
       relative_path = excluded.relative_path,
@@ -240,7 +243,15 @@ class SqliteIndexStore implements IndexStore {
       ocr_text = excluded.ocr_text,
       phash = excluded.phash,
       indexed_at_ms = excluded.indexed_at_ms,
-      pipeline_version = excluded.pipeline_version''';
+      pipeline_version = excluded.pipeline_version,
+      ocr_layout = excluded.ocr_layout,
+      screen_type = excluded.screen_type,
+      screen_conf = excluded.screen_conf,
+      source_app = excluded.source_app,
+      chat_title = excluded.chat_title,
+      chat_group = excluded.chat_group,
+      chat_body = excluded.chat_body,
+      face_count = excluded.face_count''';
 
   static const String _upsertEmbeddingSql = '''
     INSERT INTO embeddings (image_id, model_id, dim, vector) VALUES (?, ?, ?, ?)
@@ -285,6 +296,14 @@ class SqliteIndexStore implements IndexStore {
               r.perceptualHash,
               r.indexedAt.millisecondsSinceEpoch,
               r.pipelineVersion,
+              LayoutCodec.encode(r.ocrLines),
+              r.screen.type.name,
+              r.screen.confidence,
+              r.screen.sourceApp,
+              r.screen.chatTitle,
+              r.screen.isGroupChat ? 1 : 0,
+              r.screen.chatBody,
+              r.faceCount,
             ]);
             final emb = _storableEmbedding(r);
             if (emb == null) {
@@ -493,7 +512,7 @@ class SqliteIndexStore implements IndexStore {
     return _run((db) {
       final rows = db.select('''
         SELECT $_imageColumns, i.ocr_text, i.phash, i.indexed_at_ms, i.pipeline_version,
-               e.model_id, e.dim, e.vector
+               e.model_id, e.dim, e.vector, i.ocr_layout, i.face_count, $_screenColumns
         FROM images i LEFT JOIN embeddings e ON e.image_id = i.id
         WHERE i.id = ?''', [imageId]);
       if (rows.isEmpty) return null;
@@ -508,7 +527,43 @@ class SqliteIndexStore implements IndexStore {
         pipelineVersion: r.columnAt(12) as int,
         embeddingModel: r.columnAt(13) as String?,
         embedding: (blob == null || dim == null) ? null : _decodeVector(blob, dim),
+        ocrLines: LayoutCodec.decode(r.columnAt(16) as String?),
+        faceCount: r.columnAt(17) as int?,
+        screen: _screenFromRow(r, 18),
       );
+    });
+  }
+
+  static const String _screenColumns =
+      'i.screen_type, i.screen_conf, i.source_app, i.chat_title, i.chat_group, i.chat_body';
+
+  static ScreenInfo _screenFromRow(Row r, int at) {
+    final type = ScreenType.values.asNameMap()[r.columnAt(at) as String?] ?? ScreenType.unknown;
+    return ScreenInfo(
+      type: type,
+      confidence: (r.columnAt(at + 1) as num?)?.toDouble() ?? 0,
+      sourceApp: r.columnAt(at + 2) as String?,
+      chatTitle: r.columnAt(at + 3) as String?,
+      isGroupChat: (r.columnAt(at + 4) as int? ?? 0) != 0,
+      chatBody: r.columnAt(at + 5) as String? ?? '',
+    );
+  }
+
+  @override
+  Future<Map<String, ScreenInfo>> screenInfos({
+    Set<ScreenType> types = const {},
+    SearchFilters filters = SearchFilters.none,
+  }) async {
+    return _run((db) {
+      final (filterSql, filterParams) = _filterSql(filters);
+      final typeList = types.isEmpty
+          ? [for (final t in ScreenType.values) if (t != ScreenType.unknown) t.name]
+          : [for (final t in types) t.name];
+      final rows = db.select('''
+        SELECT i.id, $_screenColumns FROM images i
+        WHERE i.screen_type IN (${List.filled(typeList.length, '?').join(', ')})$filterSql''',
+          [...typeList, ...filterParams]);
+      return {for (final r in rows) r.columnAt(0) as String: _screenFromRow(r, 1)};
     });
   }
 

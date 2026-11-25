@@ -1,7 +1,9 @@
 /// Version of the indexing pipeline (OCR settings, text joining, dHash,
 /// embedding model and preprocessing). Bump it whenever any of these change
 /// so existing records are re-processed on the next sync.
-const int kPipelineVersion = 1;
+///
+/// 2: OCR line positions, screen type / chat structure, face count.
+const int kPipelineVersion = 2;
 
 /// The value stored in [IndexRecord.pipelineVersion]:
 /// `kPipelineVersion * 10 + 1` when the record has an image embedding,

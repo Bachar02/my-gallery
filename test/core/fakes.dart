@@ -125,6 +125,13 @@ class FakeImageActions implements ImageActions {
 class FakeIndexStore implements IndexStore {
   FakeIndexStore({List<String>? recent, this.statsValue = IndexStats.empty}) : recent = recent ?? [];
 
+  @override
+  Future<Map<String, ScreenInfo>> screenInfos({
+    Set<ScreenType> types = const {},
+    SearchFilters filters = SearchFilters.none,
+  }) async =>
+      const {};
+
   List<String> recent;
   IndexStats statsValue;
   Object? statsError;

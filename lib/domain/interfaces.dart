@@ -52,8 +52,19 @@ abstract interface class ImageActions {
 
 /// On-device text recognition. Implementation: `MlKitOcrEngine`.
 abstract interface class OcrEngine {
-  /// Returns recognised text ('' if none). Throws [OcrException] on failure.
-  Future<String> recognize(File imageFile);
+  /// Returns the recognised text and its line layout ([OcrResult.empty] if
+  /// none). Throws [OcrException] on failure.
+  Future<OcrResult> recognize(File imageFile);
+  Future<void> dispose();
+}
+
+/// On-device face *presence* detection: how many faces an image contains.
+/// No identity, landmarks, expressions or any other attribute is computed or
+/// stored. Implementation: `MlKitFaceCounter`.
+abstract interface class FaceCounter {
+  /// Number of faces large enough to matter in a photo, or null when the
+  /// image could not be analysed.
+  Future<int?> countFaces(File imageFile);
   Future<void> dispose();
 }
 
@@ -120,6 +131,14 @@ abstract interface class IndexStore {
     required String modelId,
     SearchFilters filters = SearchFilters.none,
     int limit = 200,
+  });
+
+  /// Structured screen info of indexed screenshots whose type is in [types]
+  /// (all analysed screenshots when empty), restricted by [filters].
+  /// Used by conversation search to match chat titles.
+  Future<Map<String, ScreenInfo>> screenInfos({
+    Set<ScreenType> types = const {},
+    SearchFilters filters = SearchFilters.none,
   });
 
   /// Images matching only filters (e.g. "screenshots from last week"), newest first.

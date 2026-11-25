@@ -16,7 +16,7 @@ int get latestSchemaVersion => migrations.length;
 typedef Migration = void Function(Database db);
 
 /// `migrations[i]` upgrades from version `i` to `i + 1`.
-final List<Migration> migrations = [_v1];
+final List<Migration> migrations = [_v1, _v2];
 
 /// Runs every pending migration. Throws [IncompatibleSchemaException] when
 /// the file was written by a newer app version (the caller treats the index
@@ -136,4 +136,25 @@ void _v1(Database db) {
   } on SqliteException catch (e) {
     debugPrint('IndexStore: FTS5 secure-delete unavailable ($e)');
   }
+}
+
+/// v2: screenshot understanding. OCR lines with positions (`ocr_layout`,
+/// see layout_codec.dart), the inferred screen type, chat title/body for
+/// chat screenshots, the app label from the file name, and the number of
+/// faces (presence only). Existing rows keep defaults until the indexing
+/// pipeline (version 2) re-processes them.
+void _v2(Database db) {
+  for (final column in const [
+    "ocr_layout   TEXT    NOT NULL DEFAULT ''",
+    "screen_type  TEXT    NOT NULL DEFAULT 'unknown'",
+    'screen_conf  REAL    NOT NULL DEFAULT 0',
+    'source_app   TEXT',
+    'chat_title   TEXT',
+    'chat_group   INTEGER NOT NULL DEFAULT 0',
+    "chat_body    TEXT    NOT NULL DEFAULT ''",
+    'face_count   INTEGER',
+  ]) {
+    db.execute('ALTER TABLE images ADD COLUMN $column');
+  }
+  db.execute('CREATE INDEX images_screen_idx ON images (screen_type, created_at_ms DESC)');
 }

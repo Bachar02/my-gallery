@@ -99,7 +99,9 @@ void main() {
     try {
       await ocr.recognize(file); // warm-up (model load)
       final sw = Stopwatch()..start();
-      final text = await ocr.recognize(file);
+      final result = await ocr.recognize(file);
+      final text = result.text;
+      expect(result.lines, isNotEmpty);
       debugPrint('[ml-bench] OCR 900x360: ${sw.elapsedMilliseconds} ms -> ${jsonEncode(text)}');
       expect(text, contains('Jamie'));
       expect(text.toUpperCase(), contains('IBAN'));

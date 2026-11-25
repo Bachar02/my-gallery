@@ -10,6 +10,7 @@ import '../../domain/interfaces.dart';
 import '../../domain/models.dart';
 import '../../ml/image/dhash.dart';
 import 'pipeline_version.dart';
+import 'screen_analyzer.dart';
 
 /// Computes a 64-bit perceptual hash from encoded image bytes, or null.
 typedef ImageHasher = Future<int?> Function(Uint8List encoded);
@@ -38,6 +39,8 @@ class DefaultIndexingService implements IndexingService {
     required this._store,
     required this._ocr,
     required this._semantic,
+    this._faces,
+    this._screens = const ScreenAnalyzer(),
     ImageHasher? hasher,
     Future<Directory> Function()? tempDirectory,
     DateTime Function()? clock,
@@ -55,6 +58,8 @@ class DefaultIndexingService implements IndexingService {
   final IndexStore _store;
   final OcrEngine _ocr;
   final SemanticModel _semantic;
+  final FaceCounter? _faces;
+  final ScreenAnalyzer _screens;
   final ImageHasher _hasher;
   final Future<Directory> Function() _tempDirectory;
   final DateTime Function() _clock;
@@ -342,19 +347,22 @@ class DefaultIndexingService implements IndexingService {
     bool modelAvailable,
   ) async {
     try {
-      String? text;
-      int? hash;
+      IndexRecord? old;
       // Same file, same pipeline, only the embedding is missing: keep the
-      // OCR text and hash instead of recognising the image again.
+      // OCR result, screen analysis, face count and hash instead of
+      // processing the image again.
       if (previous != null &&
           previous.modifiedAtMs == image.modifiedAt.millisecondsSinceEpoch &&
           previous.pipelineVersion == pipelineStamp(withEmbedding: false)) {
-        final old = await _store.get(image.id);
-        text = old?.ocrText;
-        hash = old?.perceptualHash;
+        old = await _store.get(image.id);
       }
-      text ??= await _recognize(image);
-      if (text == null) return await _diagnoseFailure(image);
+      int? hash = old?.perceptualHash;
+      final ocr = old != null ? OcrResult(text: old.ocrText, lines: old.ocrLines) : await _recognize(image);
+      if (ocr == null) return await _diagnoseFailure(image);
+      final screen = old?.screen ?? _safeSync(() => _screens.analyze(image, ocr.lines)) ?? ScreenInfo.unknown;
+      final faces = old != null
+          ? old.faceCount
+          : (_faces == null || image.kind != ImageKind.photo ? null : await _countFaces(image));
 
       final thumb = await _safe(() => _gallery.thumbnail(image.id, size: thumbnailSize));
       if (thumb != null) {
@@ -366,7 +374,10 @@ class DefaultIndexingService implements IndexingService {
       }
       return _Indexed(IndexRecord(
         image: image,
-        ocrText: text,
+        ocrText: ocr.text,
+        ocrLines: ocr.lines,
+        screen: screen,
+        faceCount: faces,
         embedding: embedding,
         embeddingModel: embedding != null ? _semantic.modelId : null,
         perceptualHash: hash,
@@ -379,8 +390,27 @@ class DefaultIndexingService implements IndexingService {
     }
   }
 
-  /// OCR text, or null when the image could not be read at all.
-  Future<String?> _recognize(GalleryImage image) async {
+  /// Face count for photos (presence only), null for screenshots or when the
+  /// detector is unavailable. Runs on the original file; ML Kit downsamples.
+  Future<int?> _countFaces(GalleryImage image) async {
+    final faces = _faces;
+    if (faces == null || image.kind != ImageKind.photo) return null;
+    final file = await _safe(() => _gallery.originalFile(image.id));
+    if (file == null) return null;
+    return _safe(() => faces.countFaces(file));
+  }
+
+  static T? _safeSync<T>(T Function() f) {
+    try {
+      return f();
+    } catch (e) {
+      debugPrint('Screen analysis failed: ${e.runtimeType}');
+      return null;
+    }
+  }
+
+  /// OCR result, or null when the image could not be read at all.
+  Future<OcrResult?> _recognize(GalleryImage image) async {
     final original = await _safe(() => _gallery.originalFile(image.id));
     if (original != null) {
       try {

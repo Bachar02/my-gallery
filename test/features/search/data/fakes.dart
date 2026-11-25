@@ -114,6 +114,19 @@ class FakeIndexStore implements IndexStore {
   }
 
   @override
+  Future<Map<String, ScreenInfo>> screenInfos({
+    Set<ScreenType> types = const {},
+    SearchFilters filters = SearchFilters.none,
+  }) async =>
+      {
+        for (final r in records.values)
+          if (r.screen.type != ScreenType.unknown &&
+              (types.isEmpty || types.contains(r.screen.type)) &&
+              _passes(r.image, filters))
+            r.image.id: r.screen,
+      };
+
+  @override
   Future<List<GalleryImage>> browse({SearchFilters filters = SearchFilters.none, int limit = 200}) async {
     final list = [for (final r in records.values) if (_passes(r.image, filters)) r.image]
       ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
@@ -349,8 +362,11 @@ class FakeOcr implements OcrEngine {
   /// Completes before each recognition; lets tests block the pipeline.
   Future<void> Function(String id)? beforeRecognize;
 
+  /// Optional layouts returned with the text, by image id.
+  final Map<String, List<OcrLine>> linesById = {};
+
   @override
-  Future<String> recognize(File imageFile) async {
+  Future<OcrResult> recognize(File imageFile) async {
     String id;
     if (imageFile.path.startsWith('/fake/original/')) {
       id = imageFile.uri.pathSegments.last.replaceAll('.jpg', '');
@@ -360,7 +376,7 @@ class FakeOcr implements OcrEngine {
     calls.add(id);
     await beforeRecognize?.call(id);
     if (failIds.contains(id)) throw OcrException('cannot read $id');
-    return textById[id] ?? '';
+    return OcrResult(text: textById[id] ?? '', lines: linesById[id] ?? const []);
   }
 
   @override

@@ -53,6 +53,93 @@ class GalleryImage {
   String toString() => 'GalleryImage($id, $filename, $kind)';
 }
 
+/// One line of recognised text and where it sits in the image. Coordinates
+/// are fractions of the image width/height (0 = left/top, 1 = right/bottom),
+/// so layouts compare across screen resolutions.
+class OcrLine {
+  const OcrLine(this.text, this.left, this.top, this.right, this.bottom, {this.block = 0});
+
+  final String text;
+  final double left;
+  final double top;
+  final double right;
+  final double bottom;
+
+  /// Index of the ML Kit text block the line belongs to.
+  final int block;
+
+  double get height => bottom - top;
+  double get width => right - left;
+  double get centerX => (left + right) / 2;
+  double get centerY => (top + bottom) / 2;
+
+  @override
+  bool operator ==(Object other) =>
+      other is OcrLine &&
+      other.text == text &&
+      other.left == left &&
+      other.top == top &&
+      other.right == right &&
+      other.bottom == bottom &&
+      other.block == block;
+
+  @override
+  int get hashCode => Object.hash(text, left, top, right, bottom, block);
+
+  @override
+  String toString() => 'OcrLine("$text", ${left.toStringAsFixed(3)},${top.toStringAsFixed(3)})';
+}
+
+/// Output of [OcrEngine.recognize].
+class OcrResult {
+  const OcrResult({required this.text, this.lines = const []});
+  static const empty = OcrResult(text: '');
+
+  /// All lines in reading order joined with newlines ('' when none).
+  final String text;
+
+  /// The same lines with positions; may be empty when the engine cannot
+  /// report positions.
+  final List<OcrLine> lines;
+}
+
+/// What a screenshot shows, inferred from its text layout
+/// (`ScreenAnalyzer`). Photos are [unknown].
+enum ScreenType { unknown, chat, map, web, shop, social, settings, receipt, email, menu, other }
+
+/// Structured understanding of a screenshot.
+class ScreenInfo {
+  const ScreenInfo({
+    required this.type,
+    this.confidence = 0,
+    this.sourceApp,
+    this.chatTitle,
+    this.isGroupChat = false,
+    this.chatBody = '',
+  });
+
+  static const unknown = ScreenInfo(type: ScreenType.unknown);
+
+  final ScreenType type;
+
+  /// 0..1, how clearly the layout matched [type].
+  final double confidence;
+
+  /// App label when it can be told (e.g. from a `Screenshot_…_Messages.jpg`
+  /// file name), otherwise null. Never guessed from pixels.
+  final String? sourceApp;
+
+  /// Chats only: the conversation title in the header (contact or group name).
+  final String? chatTitle;
+  final bool isGroupChat;
+
+  /// Chats only: message text (header, input bar and status bar removed),
+  /// one message line per line.
+  final String chatBody;
+
+  bool get isChat => type == ScreenType.chat;
+}
+
 /// Everything the index knows about one image.
 class IndexRecord {
   const IndexRecord({
@@ -60,6 +147,9 @@ class IndexRecord {
     required this.ocrText,
     required this.indexedAt,
     required this.pipelineVersion,
+    this.ocrLines = const [],
+    this.screen = ScreenInfo.unknown,
+    this.faceCount,
     this.embedding,
     this.embeddingModel,
     this.perceptualHash,
@@ -69,6 +159,16 @@ class IndexRecord {
 
   /// Text recognised in the image ('' when none). Never null.
   final String ocrText;
+
+  /// Recognised lines with positions (empty for records from pipeline 1).
+  final List<OcrLine> ocrLines;
+
+  /// Screen type and chat structure (screenshots only).
+  final ScreenInfo screen;
+
+  /// Number of faces detected (presence/count only: no identity, no
+  /// attributes). Null when not computed (screenshots, detector missing).
+  final int? faceCount;
 
   /// L2-normalised image embedding, or null when semantic model unavailable.
   final Float32List? embedding;

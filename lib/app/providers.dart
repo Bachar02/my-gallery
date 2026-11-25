@@ -14,6 +14,7 @@ import '../features/indexing/default_indexing_service.dart';
 import '../features/search/data/hybrid_search_engine.dart';
 import '../features/search/data/rule_based_query_parser.dart';
 import '../ml/clip/mobile_clip_model.dart';
+import '../ml/face/mlkit_face_counter.dart';
 import '../ml/ocr/mlkit_ocr_engine.dart';
 
 final galleryRepositoryProvider = Provider<GalleryRepository>(
@@ -35,6 +36,13 @@ final ocrEngineProvider = Provider<OcrEngine>((ref) {
   return engine;
 });
 
+/// Face presence/count for people queries (no identity, no attributes).
+final faceCounterProvider = Provider<FaceCounter>((ref) {
+  final counter = MlKitFaceCounter();
+  ref.onDispose(counter.dispose);
+  return counter;
+});
+
 /// One shared model instance: indexing embeds images, search embeds queries.
 /// Loaded lazily by whichever needs it first; failure means text-only mode.
 final semanticModelProvider = Provider<SemanticModel>((ref) {
@@ -51,6 +59,7 @@ final indexingServiceProvider = Provider<IndexingService>((ref) {
     store: ref.watch(indexStoreProvider),
     ocr: ref.watch(ocrEngineProvider),
     semantic: ref.watch(semanticModelProvider),
+    faces: ref.watch(faceCounterProvider),
     // The store commits one transaction per batch; ~50 balances UI-isolate
     // blocking time against transaction overhead (docs/DATABASE.md).
     batchSize: 50,
