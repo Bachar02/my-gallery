@@ -81,6 +81,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     t = time.time()
     main()
     print(f"[driver] {time.time() - t:.0f} s")

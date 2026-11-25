@@ -14,8 +14,11 @@ per model:
 
 Subcommands:
   compare  [models...]        metrics table (default: all cached models)
-  export   <model> <out_dir>  image embeddings + prompt embeddings for the
-                              Dart evaluation (test/eval/real_corpus_eval_test.dart)
+  export   <model> <out_dir> [prompts.json]
+                              image embeddings (+ embeddings of the prompts the
+                              Dart evaluation asked for) for
+                              test/eval/real_corpus_eval_test.dart; a model
+                              named <id>_int8 is exported as <id>
 
 Usage: tool/.venv/Scripts/python -I tool/eval/eval_models.py compare
 Models must first be downloaded with tool/fetch_models.py.
@@ -139,12 +142,19 @@ class Model:
     def __init__(self, name: str):
         self.name = name
         d = CACHE / name
+        vision, text, tok, pre = (d / "onnx" / "vision_model.onnx", d / "onnx" / "text_model.onnx",
+                                  d / "tokenizer.json", d / "preprocessor_config.json")
+        bundled = ROOT / "assets" / "models" / "siglip_b16"
+        if name == "siglip_b16_int8" and not d.exists():
+            # The bundled int8 files (tool/install_assets.py) with the export's tokenizer.
+            vision, text = bundled / "siglip_b16_vision_int8.onnx", bundled / "siglip_b16_text_int8.onnx"
+            tok, pre = CACHE / "siglip_b16" / "tokenizer.json", bundled / "preprocessor_config.json"
         so = ort.SessionOptions()
         so.intra_op_num_threads = 4
-        self.vision = ort.InferenceSession(str(d / "onnx" / "vision_model.onnx"), so, providers=["CPUExecutionProvider"])
-        self.text = ort.InferenceSession(str(d / "onnx" / "text_model.onnx"), so, providers=["CPUExecutionProvider"])
-        self.tok = Tokenizer.from_file(str(d / "tokenizer.json"))
-        self.pre = json.loads((d / "preprocessor_config.json").read_text(encoding="utf-8"))
+        self.vision = ort.InferenceSession(str(vision), so, providers=["CPUExecutionProvider"])
+        self.text = ort.InferenceSession(str(text), so, providers=["CPUExecutionProvider"])
+        self.tok = Tokenizer.from_file(str(tok))
+        self.pre = json.loads(pre.read_text(encoding="utf-8"))
         self.siglip = "siglip" in name
         if self.siglip:
             self.max_len = 64
@@ -313,6 +323,9 @@ def export(name: str, out_dir: str, prompts_file: str | None) -> None:
     items = load_corpus()
     model = Model(name)
     img = image_embeddings(model, items)
+    # Files are named after the app's model id: the bundled int8 SigLIP is
+    # "siglip_b16" in the app.
+    name = name.removesuffix("_int8")
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     enc = lambda v: base64.b64encode(v.astype("<f2").tobytes()).decode()
@@ -329,6 +342,7 @@ def export(name: str, out_dir: str, prompts_file: str | None) -> None:
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     args = sys.argv[1:]
     if not args or args[0] == "compare":
         names = args[1:] or [n for n in ("mobileclip_s0", "clip_b16", "siglip_b16") if (CACHE / n / "onnx").exists()]

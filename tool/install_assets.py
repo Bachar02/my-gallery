@@ -1,66 +1,75 @@
-"""Builds assets/models/mobileclip_s0 from the downloaded MobileCLIP-S0 export.
+"""Builds assets/models/siglip_b16 from the downloaded SigLIP export.
 
-Run tool/fetch_models.py first, inside the tool venv (needs `onnx`):
+Run first (inside the tool venv, which has onnx/onnxruntime):
+  tool/.venv/Scripts/python -I tool/fetch_models.py siglip_b16   # fp32 export, ~815 MB, sha256-verified
+  tool/.venv/Scripts/python -I tool/quantize_siglip.py           # int8 encoders -> tool/.cache/siglip_b16_int8
+then:
   tool/.venv/Scripts/python -I tool/install_assets.py
 
-Models (see tool/compress_weights.py for why not the published int8 files):
-  mobileclip_s0_vision_fp16w.onnx  fp32 graph, weights stored as fp16
-  mobileclip_s0_text_w8.onnx       fp32 graph, weights int8 per channel/row
- The tokenizer is bundled as its BPE merge list
-only (bpe_merges.txt, one merge per line): the CLIP vocabulary is fully
-determined by the merges (256 byte symbols, the same with '</w>', one token per
-merge, then the two special tokens), which this script verifies against
-tokenizer.json before writing.
+Bundled files:
+  siglip_b16_vision_int8.onnx   vision encoder, int8 transformer weights
+  siglip_b16_text_int8.onnx     text encoder, int8 transformer weights
+  spiece_vocab.tsv              Unigram vocabulary, one `score<TAB>piece` per
+                                line in id order (what lib/ml/siglip/siglip_tokenizer.dart
+                                reads; verified against tokenizer.json below)
+  preprocessor_config.json      image preprocessing of the export
+  LICENSE_APACHE_2.0.txt        licence of the SigLIP weights (google/siglip-base-patch16-224)
+  NOTICE.txt                    origin of the files
 
-Usage: py -3.13 tool/install_assets.py
+Also removes the MobileCLIP-S0 assets of earlier versions.
 """
 import json
 import os
 import shutil
-import subprocess
-import sys
+import urllib.request
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-SRC = os.path.join(ROOT, "tool", ".cache", "mobileclip_s0")
-DST = os.path.join(ROOT, "assets", "models", "mobileclip_s0")
+SRC = os.path.join(ROOT, "tool", ".cache", "siglip_b16_int8")
+DST = os.path.join(ROOT, "assets", "models", "siglip_b16")
+OLD = os.path.join(ROOT, "assets", "models", "mobileclip_s0")
+APACHE = "https://www.apache.org/licenses/LICENSE-2.0.txt"
+APACHE_CACHE = os.path.join(ROOT, "tool", ".cache", "LICENSE-2.0.txt")
 
-
-def bytes_to_unicode():
-    bs = list(range(ord("!"), ord("~") + 1)) + list(range(ord("\xa1"), ord("\xac") + 1)) + list(range(ord("\xae"), ord("\xff") + 1))
-    cs = bs[:]
-    n = 0
-    for b in range(256):
-        if b not in bs:
-            bs.append(b)
-            cs.append(256 + n)
-            n += 1
-    return [chr(c) for c in cs]
+NOTICE = """SigLIP base patch16-224 (Google), image and text encoders.
+Weights: google/siglip-base-patch16-224, Apache License 2.0
+(https://huggingface.co/google/siglip-base-patch16-224).
+ONNX export: Xenova/siglip-base-patch16-224 (Hugging Face).
+Modifications: transformer weight matrices quantised to int8 with ONNX Runtime
+dynamic quantisation (tool/quantize_siglip.py); vocabulary converted from
+tokenizer.json to a tab-separated list (tool/install_assets.py).
+"""
 
 
 def main():
+    if not os.path.isdir(SRC):
+        raise SystemExit("run tool/quantize_siglip.py first")
     os.makedirs(DST, exist_ok=True)
     tok = json.load(open(os.path.join(SRC, "tokenizer.json"), encoding="utf-8"))
-    merges = [m if isinstance(m, str) else " ".join(m) for m in tok["model"]["merges"]]
-    sym = bytes_to_unicode()
-    vocab = sym + [s + "</w>" for s in sym] + [m.replace(" ", "") for m in merges] + ["<|startoftext|>", "<|endoftext|>"]
-    if {t: i for i, t in enumerate(vocab)} != tok["model"]["vocab"]:
-        raise SystemExit("vocab is not derivable from merges; bundle tokenizer.json instead")
-    with open(os.path.join(DST, "bpe_merges.txt"), "w", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(merges) + "\n")
-    compress = os.path.join(ROOT, "tool", "compress_weights.py")
-    for src, dst, mode in [
-        ("onnx/vision_model.onnx", "mobileclip_s0_vision_fp16w.onnx", "fp16"),
-        ("onnx/text_model.onnx", "mobileclip_s0_text_w8.onnx", "int8"),
-    ]:
-        subprocess.check_call([sys.executable, "-I", compress, os.path.join(SRC, src), os.path.join(DST, dst), "--mode", mode])
-    for old in ("vision_model_int8.onnx", "text_model_int8.onnx"):
-        if os.path.exists(os.path.join(DST, old)):
-            os.remove(os.path.join(DST, old))
-    for rel, name in [
+    model = tok["model"]
+    if model["type"] != "Unigram" or model.get("byte_fallback"):
+        raise SystemExit("unexpected tokenizer model")
+    vocab = model["vocab"]
+    for piece, _ in vocab:
+        if "\t" in piece or "\n" in piece or "\r" in piece:
+            raise SystemExit(f"piece cannot be stored as TSV: {piece!r}")
+    with open(os.path.join(DST, "spiece_vocab.tsv"), "w", encoding="utf-8", newline="\n") as f:
+        for piece, score in vocab:
+            f.write(f"{score!r}\t{piece}\n")
+    for src, dst in [
+        ("onnx/vision_model.onnx", "siglip_b16_vision_int8.onnx"),
+        ("onnx/text_model.onnx", "siglip_b16_text_int8.onnx"),
         ("preprocessor_config.json", "preprocessor_config.json"),
-        ("LICENSE", "LICENSE_XENOVA_EXPORT.txt"),
     ]:
-        shutil.copyfile(os.path.join(SRC, rel), os.path.join(DST, name))
+        shutil.copyfile(os.path.join(SRC, src), os.path.join(DST, dst))
+    if not os.path.exists(APACHE_CACHE):
+        req = urllib.request.Request(APACHE, headers={"User-Agent": "gallery-asset-build/1.0"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            open(APACHE_CACHE, "wb").write(r.read())
+    shutil.copyfile(APACHE_CACHE, os.path.join(DST, "LICENSE_APACHE_2.0.txt"))
+    with open(os.path.join(DST, "NOTICE.txt"), "w", encoding="utf-8", newline="\n") as f:
+        f.write(NOTICE)
+    if os.path.isdir(OLD):
+        shutil.rmtree(OLD)
     for n in sorted(os.listdir(DST)):
         print(f"{os.path.getsize(os.path.join(DST, n)):>10}  {n}")
 
