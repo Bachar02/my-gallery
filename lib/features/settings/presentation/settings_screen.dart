@@ -14,6 +14,7 @@ import '../../home/presentation/home_screen.dart' show handleStatusAction, manag
 import '../../home/presentation/indexing_controller.dart';
 import '../../home/presentation/recent_searches_controller.dart';
 import '../../onboarding/presentation/permission_controller.dart';
+import 'developer_mode.dart';
 import 'settings_controller.dart';
 
 class SettingsScreen extends ConsumerWidget {
@@ -387,34 +388,56 @@ class _DataSection extends ConsumerWidget {
   }
 }
 
-class _AboutSection extends StatelessWidget {
+class _AboutSection extends ConsumerStatefulWidget {
   const _AboutSection();
 
   @override
-  Widget build(BuildContext context) => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const SectionHeader('About'),
-          Card(
-            child: Column(
-              children: [
-                const ListTile(
-                  leading: Icon(Icons.image_search),
-                  title: Text('AI Gallery'),
-                  subtitle: Text('Version $appVersion · Works fully offline'),
+  ConsumerState<_AboutSection> createState() => _AboutSectionState();
+}
+
+class _AboutSectionState extends ConsumerState<_AboutSection> {
+  int _taps = 0;
+
+  Future<void> _onVersionTap() async {
+    if (++_taps < developerModeTaps) return;
+    _taps = 0;
+    final on = await ref.read(developerModeProvider.notifier).toggle();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(on ? 'Developer score breakdown on' : 'Developer score breakdown off'),
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final developer = ref.watch(developerModeProvider).value ?? false;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SectionHeader('About'),
+        Card(
+          child: Column(
+            children: [
+              ListTile(
+                leading: const Icon(Icons.image_search),
+                title: const Text('AI Gallery'),
+                subtitle: Text('Version $appVersion · Works fully offline'
+                    '${developer ? ' · Developer score breakdown on' : ''}'),
+                onTap: _onVersionTap,
+              ),
+              ListTile(
+                leading: const Icon(Icons.description_outlined),
+                title: const Text('Open-source licenses'),
+                onTap: () => showLicensePage(
+                  context: context,
+                  applicationName: 'AI Gallery',
+                  applicationVersion: appVersion,
                 ),
-                ListTile(
-                  leading: const Icon(Icons.description_outlined),
-                  title: const Text('Open-source licenses'),
-                  onTap: () => showLicensePage(
-                    context: context,
-                    applicationName: 'AI Gallery',
-                    applicationVersion: appVersion,
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
-        ],
-      );
+        ),
+      ],
+    );
+  }
 }

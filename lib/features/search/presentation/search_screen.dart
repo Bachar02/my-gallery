@@ -8,10 +8,13 @@ import '../../../core/widgets/filter_bar.dart';
 import '../../../core/widgets/format.dart';
 import '../../../core/widgets/gallery_thumbnail.dart';
 import '../../../core/widgets/query_chip.dart';
+import '../../../core/widgets/section_header.dart';
 import '../../../core/widgets/skeleton.dart';
 import '../../../core/widgets/state_views.dart';
 import '../../../domain/models.dart';
+import '../../settings/presentation/developer_mode.dart';
 import '../../viewer/presentation/viewer_screen.dart';
+import 'score_breakdown_screen.dart';
 import 'date_presets.dart';
 import 'search_controller.dart';
 
@@ -193,24 +196,50 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   }
 }
 
-class _Results extends StatelessWidget {
+class _Results extends ConsumerWidget {
   const _Results({required this.response, required this.state});
 
   final SearchResponse response;
   final SearchState state;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final muted = theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant);
-    final interpretation = interpretationOf(response.query, state.filters);
-    final count = response.results.length;
+    final interpretation = interpretationOf(response.query, state.filters, intent: response);
+    final primary = response.primary;
+    final mentions = response.mentions;
+    final count = primary.length;
     final seconds = (response.elapsed.inMilliseconds / 1000).toStringAsFixed(1);
+    final developer = ref.watch(developerModeProvider).value ?? false;
 
     return LayoutBuilder(builder: (context, constraints) {
       final columns = AppLayout.gridColumns(constraints.maxWidth);
       const spacing = AppSpace.xs;
       final tileWidth = (constraints.maxWidth - AppSpace.gutter * 2 - spacing * (columns - 1)) / columns;
+      Widget grid(List<SearchResult> results) => SliverPadding(
+            padding: const EdgeInsets.fromLTRB(AppSpace.gutter, 0, AppSpace.gutter, AppSpace.lg),
+            sliver: SliverGrid(
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: columns,
+                mainAxisSpacing: spacing,
+                crossAxisSpacing: spacing,
+                mainAxisExtent: tileWidth + ResultTile.captionHeight(context),
+              ),
+              delegate: SliverChildBuilderDelegate(
+                (context, i) => ResultTile(
+                  result: results[i],
+                  onTap: () => Navigator.of(context).push(ViewerScreen.route(results: results, initialIndex: i)),
+                ),
+                childCount: results.length,
+              ),
+            ),
+          );
+      final countText = switch ((count, mentions.isNotEmpty, response.intent)) {
+        (0, true, SearchIntent.conversation) => 'No conversation found · $seconds s',
+        (1, _, _) => '1 match · $seconds s',
+        _ => '${formatCount(count)} matches · $seconds s',
+      };
       return CustomScrollView(
         slivers: [
           SliverPadding(
@@ -231,48 +260,81 @@ class _Results extends StatelessWidget {
                         ],
                       ),
                     ),
-                  Semantics(
-                    liveRegion: true,
-                    child: Text(count == 1 ? '1 match · $seconds s' : '${formatCount(count)} matches · $seconds s',
-                        style: muted),
+                  Row(
+                    children: [
+                      Expanded(child: Semantics(liveRegion: true, child: Text(countText, style: muted))),
+                      if (developer)
+                        TextButton.icon(
+                          onPressed: () => Navigator.of(context)
+                              .push(ScoreBreakdownScreen.route(query: state.query, response: response)),
+                          icon: const Icon(Icons.bug_report_outlined, size: 18),
+                          label: const Text('Score breakdown'),
+                        ),
+                    ],
                   ),
                 ],
               ),
             ),
           ),
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(AppSpace.gutter, 0, AppSpace.gutter, AppSpace.xl),
-            sliver: SliverGrid(
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: columns,
-                mainAxisSpacing: spacing,
-                crossAxisSpacing: spacing,
-                mainAxisExtent: tileWidth + ResultTile.captionHeight(context),
-              ),
-              delegate: SliverChildBuilderDelegate(
-                (context, i) => ResultTile(
-                  result: response.results[i],
-                  onTap: () => Navigator.of(context).push(ViewerScreen.route(results: response.results, initialIndex: i)),
+          if (primary.isNotEmpty) grid(primary),
+          if (mentions.isNotEmpty) ...[
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(AppSpace.gutter, 0, AppSpace.gutter, AppSpace.xs),
+              sliver: SliverToBoxAdapter(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SectionHeader(response.mentionsLabel ?? 'Mentions', padding: EdgeInsets.zero),
+                    Text('The name appears in the text of these screenshots, but they are not a conversation with '
+                        'this person.', style: muted),
+                  ],
                 ),
-                childCount: count,
               ),
             ),
-          ),
+            grid(mentions),
+          ],
         ],
       );
     });
   }
 }
 
-/// "Screenshots · Summer 2025" from what the parser inferred, omitting parts
-/// that merely repeat an explicit filter. Null when nothing was inferred.
-String? interpretationOf(ParsedQuery query, SearchFilters filters) {
+/// "Conversations with Jamie · Summer 2025": what the engine understood,
+/// omitting parts that merely repeat an explicit filter. Null when nothing
+/// was inferred.
+String? interpretationOf(ParsedQuery query, SearchFilters filters, {SearchResponse? intent}) {
   final parts = <String>[];
+  String? detail(String label) {
+    for (final d in intent?.details ?? const <ScoreDetail>[]) {
+      if (d.label == label) return d.value;
+    }
+    return null;
+  }
+
+  switch (intent?.intent) {
+    case SearchIntent.conversation:
+      final person = detail('person');
+      if (person != null) parts.add('conversations with ${person[0].toUpperCase()}${person.substring(1)}');
+    case SearchIntent.visual:
+      if (query.semanticText.isNotEmpty) parts.add('photos of ${query.semanticText}');
+    case SearchIntent.text:
+      parts.add('text in images');
+    case SearchIntent.hybrid:
+      final screen = detail('screen type');
+      if (screen != null) parts.add('$screen screenshots');
+    default:
+      break;
+  }
   final kind = query.kind;
-  if (kind != null && filters.kinds.isEmpty) parts.add(kindPluralLabel(kind));
+  if (kind != null && filters.kinds.isEmpty && intent?.intent != SearchIntent.conversation &&
+      !parts.any((p) => p.endsWith('screenshots'))) {
+    parts.add(kindPluralLabel(kind));
+  }
   final range = query.dateRange;
   if (range != null && filters.dateRange == null) parts.add(range.label);
-  return parts.isEmpty ? null : parts.join(' · ');
+  if (parts.isEmpty) return null;
+  final text = parts.join(' · ');
+  return text[0].toUpperCase() + text.substring(1);
 }
 
 /// Quiet notice shown when visual search was not used.
