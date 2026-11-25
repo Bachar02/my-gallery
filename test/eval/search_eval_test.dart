@@ -28,7 +28,7 @@ final DateTime _now = DateTime(2026, 11, 23, 15); // Monday
 
 const _concepts = [
   'red', 'car', 'beach', 'sea', 'dog', 'cat', 'mountain', 'snow', 'pizza', 'food', 'sunset', 'sky',
-  'tree', 'city', 'street', 'bicycle', 'cake', 'birthday', 'flower', 'screenshot', 'document', 'chat',
+  'tree', 'city', 'street', 'bicycle', 'cake', 'birthday', 'flower', 'screenshot', 'document', 'chat', 'menu',
 ];
 const _dim = 32;
 const _unknownAxis = _dim - 1;
@@ -69,8 +69,10 @@ class _ConceptModel implements SemanticModel {
   @override
   Future<Float32List> embedImage(Uint8List encodedImage) => throw UnimplementedError();
   @override
-  Future<Float32List> embedText(String text) async =>
-      _embed(text.replaceFirst(RegExp(r'^a (photo|screenshot) of '), '').split(RegExp(r'\s+')));
+  Future<Float32List> embedText(String text) async => _embed(text
+      .replaceFirst(RegExp(r'^a (photo|screenshot) of '), '')
+      .replaceAll(RegExp(r'[^a-z ]'), '')
+      .split(RegExp(r'\s+')));
   @override
   Future<void> dispose() async {}
 }
@@ -133,10 +135,10 @@ final List<_Item> _corpus = [
       visual: 'document car'),
   // Menus
   _Item('menu_bistro', _p, _d(2026, 7, 18), 'Les entrées\nSoupe à l\'oignon 8.50\nLes plats\nSteak frites 21.00\nLes desserts\n'
-      'Crème brûlée 7.00', visual: 'food document'),
+      'Crème brûlée 7.00', visual: 'food document menu'),
   _Item('menu_pizzeria', _p, _d(2026, 8, 9), 'PIZZERIA NAPOLI\nMENU\nMargherita 9\nDiavola 11\nQuattro formaggi 12\nTiramisu 6',
-      visual: 'food document'),
-  _Item('menu_cafe_board', _p, _d(2025, 12, 1), 'Coffee menu\nEspresso 2.20\nCappuccino 3.10\nChai latte 3.40', visual: 'document'),
+      visual: 'food document menu'),
+  _Item('menu_cafe_board', _p, _d(2025, 12, 1), 'Coffee menu\nEspresso 2.20\nCappuccino 3.10\nChai latte 3.40', visual: 'document menu'),
   // Bank / passwords / addresses / misc documents
   _Item('bank_app_details', _s, _d(2026, 3, 3), 'Account details\nAccount number 41 22 98 77\nSort code 20-45-77\nBeneficiary Jane Fox',
       visual: 'screenshot document'),
@@ -230,7 +232,7 @@ final List<_Q> _queries = [
   _Q('borading pass', {'boarding_pass_lh', 'boarding_pass_easy'}, note: 'typo'),
   // Visual
   _Q('dog', {'photo_dog'}),
-  _Q('birthday cake', {'photo_birthday_cake', 'chat_mom_birthday'}),
+  _Q('birthday cake', {'photo_birthday_cake'}, note: 'visual: a chat that mentions a cake is not one'),
   _Q('sunset over the sea', {'photo_sunset', 'photo_beach'}),
   // Person rule
   _Q('message from Mom', {'chat_mom_birthday'}),
@@ -272,6 +274,12 @@ void main() {
             kind: it.kind,
           ),
           ocrText: it.text,
+          // Chat screenshots carry the structure ScreenAnalyzer extracts on
+          // the device: the first line of these chats is the header title.
+          screen: it.visual.contains('chat')
+              ? ScreenInfo(type: ScreenType.chat, confidence: 1, chatTitle: it.text.split('\n').first,
+                  chatBody: it.text.split('\n').skip(1).join('\n'))
+              : ScreenInfo.unknown,
           embedding: _embed(it.visual.split(' ')),
           embeddingModel: 'eval_concepts',
           // Distinct hashes: no near-duplicate collapsing in this corpus.

@@ -34,7 +34,7 @@ const Set<String> kVisualNouns = {
   'sunset', 'sunsets', 'sunrise', 'sky', 'clouds', 'rainbow', 'moon', 'stars', 'landscape', 'view', 'city',
   'skyline', 'street', 'streets', 'road', 'building', 'buildings', 'house', 'houses', 'church', 'castle',
   'bridge', 'tower', 'skyscraper', 'stadium', 'airport', 'station', 'kitchen', 'bedroom', 'room', 'office',
-  'restaurant', 'cafe', 'bar', 'pool', 'night', 'fireworks', 'christmas', 'tree', 'snowman',
+  'restaurant', 'cafe', 'bar', 'pool', 'night', 'fireworks', 'christmas', 'snowman',
   // events
   'wedding', 'party', 'concert', 'festival', 'graduation', 'birthday', 'game', 'match',
   // objects
@@ -83,13 +83,14 @@ const Set<String> kTextNouns = {
   'address', 'addresses', 'phone', 'email', 'username', 'login', 'wifi', 'ssid', 'reference', 'tracking',
   'order', 'invoice', 'receipt', 'receipts', 'ticket', 'tickets', 'boarding', 'booking', 'reservation',
   'confirmation', 'appointment', 'total', 'price', 'amount', 'balance', 'account', 'details', 'quote',
-  'text', 'words', 'says', 'saying', 'written', 'recipe', 'payslip', 'id', 'error', 'id', 'serial',
+  'text', 'words', 'says', 'saying', 'written', 'recipe', 'payslip', 'id', 'error', 'serial',
 };
 
 /// Words linking a head noun to its complement ("map *to* the hotel",
 /// "menu *of* the restaurant"): the head is before them.
 const Set<String> kLinkWords = {
   'of', 'to', 'from', 'at', 'in', 'on', 'with', 'for', 'near', 'by', 'about', 'showing', 'where', 'that',
+  'over', 'under', 'behind', 'during', 'inside', 'outside',
 };
 
 /// Words kept inside the visual phrase sent to the image model.

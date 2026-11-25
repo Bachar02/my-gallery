@@ -1,8 +1,8 @@
 /// Shared domain models.
 ///
-/// OWNERSHIP: Team Lead. These types are the contract between modules
-/// (gallery, indexing, AI, database, UI). Do not change them without
-/// updating docs/ARCHITECTURE.md and every implementation.
+/// These types are the contract between modules (gallery, indexing, AI,
+/// database, UI). Change them together with docs/ARCHITECTURE.md and every
+/// implementation.
 library;
 
 import 'dart:typed_data';
@@ -323,7 +323,7 @@ class SearchFilters {
   bool get isEmpty => dateRange == null && kinds.isEmpty;
 }
 
-enum MatchSignal { textInImage, visualContent, date, imageType, filename }
+enum MatchSignal { textInImage, visualContent, date, imageType, filename, conversation, screenType }
 
 /// One human-readable reason why an image matched. Shown in the viewer.
 class MatchReason {
@@ -348,14 +348,48 @@ class MatchReason {
   final double? strength;
 }
 
+/// Which list of a response a result belongs to.
+enum ResultGroup {
+  /// Answers the query.
+  primary,
+
+  /// Conversation queries: screenshots where the person is only mentioned
+  /// in the text (not the conversation title). Shown separately.
+  mentions,
+}
+
+/// One line of the developer score breakdown ("visual cosine: 0.231").
+class ScoreDetail {
+  const ScoreDetail(this.label, this.value);
+  final String label;
+  final String value;
+
+  @override
+  String toString() => '$label: $value';
+}
+
 class SearchResult {
-  const SearchResult({required this.image, required this.score, required this.reasons});
+  const SearchResult({
+    required this.image,
+    required this.score,
+    required this.reasons,
+    this.group = ResultGroup.primary,
+    this.details = const [],
+  });
   final GalleryImage image;
 
   /// Final fused score (higher = better). Only comparable within one response.
   final double score;
   final List<MatchReason> reasons;
+  final ResultGroup group;
+
+  /// How the score was reached, for the on-device developer view. Never
+  /// logged or sent anywhere.
+  final List<ScoreDetail> details;
 }
+
+/// What the search engine understood the query to be.
+enum SearchIntent { visual, text, conversation, hybrid, filterOnly, none }
 
 class SearchResponse {
   const SearchResponse({
@@ -363,10 +397,27 @@ class SearchResponse {
     required this.results,
     required this.elapsed,
     required this.semanticSearchUsed,
+    this.intent = SearchIntent.none,
+    this.mentionsLabel,
+    this.details = const [],
   });
 
   final ParsedQuery query;
+
+  /// Primary results first, then [ResultGroup.mentions] results (if any).
   final List<SearchResult> results;
+
+  /// How the query was understood.
+  final SearchIntent intent;
+
+  /// Header for the [ResultGroup.mentions] results, e.g. "Mentions Jamie".
+  final String? mentionsLabel;
+
+  /// Query-level breakdown for the developer view (intent, head noun...).
+  final List<ScoreDetail> details;
+
+  List<SearchResult> get primary => [for (final r in results) if (r.group == ResultGroup.primary) r];
+  List<SearchResult> get mentions => [for (final r in results) if (r.group == ResultGroup.mentions) r];
   final Duration elapsed;
 
   /// False when the visual model is not loaded / no embeddings exist, so the

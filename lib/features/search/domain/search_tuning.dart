@@ -80,6 +80,22 @@ abstract final class SearchTuning {
 
   static const int maxResults = 100;
 
+  /// Screen-type queries: a term found only in another inflection ("Hotels"
+  /// chip for "map to the hotel") counts this much of an exact match...
+  static const double inflectedOnlyWeight = 0.5;
+
+  /// ...and a screenshot of the requested type is kept when its text
+  /// coverage is at least this fraction of the best one.
+  static const double screenRelativeCut = 0.6;
+
+  /// Conversation queries: at most this many "mentions" results.
+  static const int maxMentions = 30;
+
+  /// Visual queries: score bonus when a photo that already matches visually
+  /// also contains the head noun or a modifier as text (a menu that says
+  /// "MENU"). Never enough to create a result.
+  static const double ocrSupportBoost = 0.1;
+
   /// Near-duplicates: dHash distance (of 64 bits) at or below which two
   /// images look the same...
   static const int nearDuplicateBits = 5;

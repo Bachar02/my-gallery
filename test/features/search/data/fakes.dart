@@ -224,13 +224,20 @@ class FakeSemanticModel implements SemanticModel {
   @override
   Future<Float32List> embedText(String text) async {
     prompts.add(text);
-    final key = text.replaceFirst(RegExp(r'^a (photo|screenshot) of '), '');
+    final key = text
+        .replaceFirst(RegExp(r'^a (photo|screenshot) of '), '')
+        .replaceFirst(RegExp(r'^(a|an|the) '), '')
+        .replaceFirst(RegExp(r'\.$'), '');
     return texts[key] ?? unit(3, 1);
   }
 
   @override
   Future<void> dispose() async {}
 }
+
+/// A chat screenshot's structure (as ScreenAnalyzer would produce).
+ScreenInfo chat(String title, {String body = '', bool group = false}) =>
+    ScreenInfo(type: ScreenType.chat, confidence: 1, chatTitle: title, chatBody: body, isGroupChat: group);
 
 /// Unit vector in 4-D whose cosine with axis 0 is [cos] (rest on [axis]).
 Float32List unit(double cos, [int axis = 1]) {
@@ -265,10 +272,14 @@ IndexRecord record(
   Float32List? embedding,
   int? hash,
   int pipelineVersion = 11,
+  ScreenInfo screen = ScreenInfo.unknown,
+  int? faces,
 }) =>
     IndexRecord(
       image: image,
       ocrText: text,
+      screen: screen,
+      faceCount: faces,
       embedding: embedding,
       embeddingModel: embedding == null ? null : 'fake_clip',
       perceptualHash: hash,

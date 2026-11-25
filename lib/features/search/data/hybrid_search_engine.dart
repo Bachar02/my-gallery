@@ -6,9 +6,11 @@ import 'package:flutter/foundation.dart';
 import '../../../domain/interfaces.dart';
 import '../../../domain/models.dart';
 import '../domain/intent_expansion.dart';
-import '../domain/person_mentions.dart';
+import '../domain/query_analyzer.dart';
+import '../domain/query_lexicon.dart';
 import '../domain/search_tuning.dart';
 import '../domain/text_matching.dart';
+import '../domain/visual_calibration.dart';
 import 'rule_based_query_parser.dart';
 
 /// Hybrid retrieval: OCR text (FTS) + visual similarity (CLIP), fused, with
@@ -37,6 +39,7 @@ class HybridSearchEngine implements SearchEngine {
     required this._model,
     DateTime Function()? clock,
     this._expander = const IntentExpander(),
+    this._analyzer = const QueryAnalyzer(),
   }) : _clock = clock ?? DateTime.now;
 
   final IndexStore _store;
@@ -44,51 +47,92 @@ class HybridSearchEngine implements SearchEngine {
   final SemanticModel _model;
   final DateTime Function() _clock;
   final IntentExpander _expander;
+  final QueryAnalyzer _analyzer;
+
+  VisualCalibration get _cal => VisualCalibration.forModel(_model.modelId);
 
   @override
   Future<SearchResponse> search(String query, {SearchFilters filters = SearchFilters.none}) async {
     final sw = Stopwatch()..start();
     final parsed = _parser.parse(query, now: _clock());
+    final plan = _analyzer.analyze(_capped(query), parsed);
     final effective = SearchFilters(
       dateRange: filters.dateRange ?? parsed.dateRange,
       kinds: filters.kinds.isNotEmpty ? filters.kinds : {if (parsed.kind != null) parsed.kind!},
     );
-    // People named in the query are required literal text and are never
-    // sent to the image model (it cannot know who "Jamie" is).
-    final people = [for (final n in PersonMentions.detect(_capped(query))) if (parsed.keywords.contains(n)) n];
-    final visualText = [
-      for (final w in parsed.semanticText.split(' '))
-        if (w.isNotEmpty && !people.contains(w)) w,
-    ].join(' ');
     final shown = ParsedQuery(
       raw: parsed.raw,
-      semanticText: visualText,
+      semanticText: plan.visualPhrase,
       keywords: parsed.keywords,
       phrases: parsed.phrases,
       dateRange: effective.dateRange,
       kind: effective.kinds.length == 1 ? effective.kinds.first : null,
     );
     // semanticSearchUsed reports whether visual search is AVAILABLE (model
-    // loaded and images embedded), not whether this particular query had
-    // descriptive words; the UI uses it to say "text-only search".
+    // loaded and images embedded), not whether this particular query used
+    // it; the UI uses it to say "text-only search".
     final stats = await _store.stats();
     final semanticAvailable = await _semanticAvailable(stats);
-    SearchResponse respond(List<SearchResult> results) => SearchResponse(
-        query: shown, results: results, elapsed: sw.elapsed, semanticSearchUsed: semanticAvailable);
+    final intent = switch (plan.intent) {
+      QueryIntent.visual => SearchIntent.visual,
+      QueryIntent.text => SearchIntent.text,
+      QueryIntent.conversation => SearchIntent.conversation,
+      QueryIntent.hybrid => SearchIntent.hybrid,
+      QueryIntent.filterOnly => SearchIntent.filterOnly,
+      QueryIntent.empty => SearchIntent.none,
+    };
+    final planDetails = [
+      ScoreDetail('intent', plan.intent.name),
+      if (plan.head != null) ScoreDetail('head noun', plan.head!),
+      if (plan.modifiers.isNotEmpty) ScoreDetail('modifiers', plan.modifiers.join(', ')),
+      if (plan.visualPhrase.isNotEmpty) ScoreDetail('visual phrase', plan.visualPhrase),
+      if (plan.textTerms.isNotEmpty) ScoreDetail('text terms', plan.textTerms.join(', ')),
+      if (plan.screenType != null) ScoreDetail('screen type', plan.screenType!.name),
+      if (plan.person != null) ScoreDetail('person', plan.person!),
+      ScoreDetail('visual model', semanticAvailable ? _model.modelId : 'unavailable'),
+    ];
+    SearchResponse respond(List<SearchResult> results, {String? mentionsLabel}) => SearchResponse(
+        query: shown,
+        results: results,
+        elapsed: sw.elapsed,
+        semanticSearchUsed: semanticAvailable,
+        intent: intent,
+        mentionsLabel: mentionsLabel,
+        details: planDetails);
 
-    if (!parsed.hasContent) {
-      if (effective.isEmpty) return respond(const []);
-      return respond(await _browse(effective));
+    switch (plan.intent) {
+      case QueryIntent.empty:
+        return respond(const []);
+      case QueryIntent.filterOnly:
+        return respond(await _browse(effective));
+      case QueryIntent.conversation:
+        final (primary, mentions) = await _conversation(plan, effective);
+        return respond([...primary, ...mentions], mentionsLabel: 'Mentions ${_display(plan.person!, query)}');
+      case QueryIntent.visual when semanticAvailable:
+        return respond(await _visual(plan, effective, stats));
+      case QueryIntent.hybrid when plan.screenType != null || plan.wantsScreenshot && plan.head != null &&
+          kVisualNouns.contains(plan.head):
+        return respond(await _screens(plan, effective, stats, semanticAvailable));
+      // Text-only mode (no model or no embeddings yet): a visual query can
+      // only be answered from recognised text; the UI says so.
+      case QueryIntent.visual:
+      case QueryIntent.text:
+      case QueryIntent.hybrid:
+        final visualFuture = semanticAvailable ? _visualHits(shown, effective, stats) : Future.value(null);
+        final textFuture = _textHits(shown, effective);
+        final visual = await visualFuture;
+        final text = await textFuture;
+        final results = await _rank(shown, effective, text, visual, stats, const [],
+            textCentric: true, intentDetail: plan.intent.name);
+        return respond(results);
     }
+  }
 
-    final visualFuture = semanticAvailable ? _visualHits(shown, effective, stats) : Future.value(null);
-    final textFuture = _textHits(shown, effective);
-    final visual = await visualFuture;
-    final text = await textFuture;
-
-    final textCentric = _expander.match(shown.keywords).concepts.any((c) => c.textCentric);
-    final results = await _rank(shown, effective, text, visual, stats, people, textCentric: textCentric);
-    return respond(results);
+  /// The person's name as the user typed it ("Jamie" for "jamie").
+  static String _display(String name, String raw) {
+    final m = RegExp(RegExp.escape(name), caseSensitive: false).firstMatch(raw);
+    final typed = m?[0] ?? name;
+    return typed[0].toUpperCase() + typed.substring(1);
   }
 
   static String _capped(String q) => q.length > RuleBasedQueryParser.maxQueryChars
@@ -134,7 +178,8 @@ class HybridSearchEngine implements SearchEngine {
     if (q.semanticText.trim().isEmpty || stats.imagesWithEmbedding == 0) return null;
     try {
       if (!_model.isLoaded && !await _model.load()) return null;
-      final vector = await _model.embedText(visualPrompt(q.semanticText, f));
+      final onlyScreenshots = f.kinds.length == 1 && f.kinds.first == ImageKind.screenshot;
+      final vector = await _queryVector(q.semanticText, screenshot: onlyScreenshots);
       return await _store.searchVector(vector, modelId: _model.modelId, filters: f, limit: SearchTuning.vectorLimit);
     } catch (e) {
       debugPrint('Visual search unavailable: $e');
@@ -142,12 +187,37 @@ class HybridSearchEngine implements SearchEngine {
     }
   }
 
-  /// Text fed to the CLIP text encoder. CLIP was trained on captions, so a
-  /// caption-like prompt works better than bare keywords.
+  /// Captions fed to the text encoder for [phrase]: the calibrated prompt
+  /// ensemble (image-text models are trained on captions, and averaging
+  /// several phrasings is more robust than any single one).
   @visibleForTesting
-  static String visualPrompt(String semanticText, SearchFilters f) {
-    final onlyScreenshots = f.kinds.length == 1 && f.kinds.first == ImageKind.screenshot;
-    return onlyScreenshots ? 'a screenshot of $semanticText' : 'a photo of $semanticText';
+  static List<String> visualPrompts(String phrase, VisualCalibration cal, {required bool screenshot}) => [
+        for (final t in screenshot ? cal.screenPrompts : cal.photoPrompts) t.replaceAll('{}', phrase),
+      ];
+
+  /// Mean of the prompt embeddings, L2-normalised.
+  Future<Float32List> _queryVector(String phrase, {required bool screenshot}) async {
+    final prompts = visualPrompts(phrase, _cal, screenshot: screenshot);
+    Float32List? sum;
+    for (final p in prompts) {
+      final v = await _model.embedText(p);
+      sum ??= Float32List(v.length);
+      for (var i = 0; i < v.length; i++) {
+        sum[i] += v[i];
+      }
+    }
+    final out = sum!;
+    var n = 0.0;
+    for (final x in out) {
+      n += x * x;
+    }
+    n = math.sqrt(n);
+    if (n > 0) {
+      for (var i = 0; i < out.length; i++) {
+        out[i] /= n;
+      }
+    }
+    return out;
   }
 
   // --------------------------------------------------------------- ranking
@@ -160,6 +230,7 @@ class HybridSearchEngine implements SearchEngine {
     IndexStats stats,
     List<String> people, {
     required bool textCentric,
+    String intentDetail = 'text',
   }) async {
     final cands = <String, _Candidate>{};
     _Candidate cand(String id) => cands.putIfAbsent(id, () => _Candidate(id));
@@ -195,13 +266,11 @@ class HybridSearchEngine implements SearchEngine {
     if (visual != null && visual.isNotEmpty) {
       final best = visual.map((h) => h.similarity).reduce(math.max);
       for (final h in visual) {
-        if (h.similarity < SearchTuning.visualFloor) continue;
-        if (h.similarity < best - SearchTuning.visualMargin) continue;
+        if (h.similarity < _cal.floor) continue;
+        if (h.similarity < best - _cal.margin) continue;
         final c = cand(h.imageId);
         c.visualSimilarity = h.similarity;
-        c.visualScore = ((h.similarity - SearchTuning.visualFloor) /
-                (SearchTuning.visualFull - SearchTuning.visualFloor))
-            .clamp(0.0, 1.0);
+        c.visualScore = _cal.strength(h.similarity);
       }
     }
 
@@ -263,14 +332,17 @@ class HybridSearchEngine implements SearchEngine {
     // Text-centric intents (password, bank details, ticket...) with no text
     // evidence anywhere: CLIP scores text-like screenshots ~0.2 for these, so
     // a visual-only result needs the strong floor.
+    // Text and unknown-noun queries are answered by recognised text; a
+    // visual-only result must be a clear visual match (visual queries take
+    // the visual route instead).
     final anyText = verified.any((c) => c.textAccepted);
-    final strictVisual = strongText || (textCentric && !anyText);
+    final strictVisual = strongText || textCentric || !anyText;
     final accepted = <_Candidate>[];
     for (final c in verified) {
       if (!c.textAccepted) {
         final sim = c.visualSimilarity;
         if (sim == null) continue;
-        if (strictVisual && sim < SearchTuning.visualOnlyFloorWithStrongText) continue;
+        if (strictVisual && sim < _cal.strictFloor) continue;
       }
       c.score = (c.textAccepted ? SearchTuning.textWeight * c.textScore : 0) +
           (c.visualSimilarity != null ? SearchTuning.visualWeight * c.visualScore : 0);
@@ -281,7 +353,14 @@ class HybridSearchEngine implements SearchEngine {
     final kept = _collapse(accepted, (c) => c.record!);
     return [
       for (final c in kept.take(SearchTuning.maxResults))
-        SearchResult(image: c.record!.image, score: c.score, reasons: _reasons(c, q, f)),
+        SearchResult(image: c.record!.image, score: c.score, reasons: _reasons(c, q, f), details: [
+          ScoreDetail('route', intentDetail),
+          ScoreDetail('text score', c.textScore.toStringAsFixed(3)),
+          ScoreDetail('text accepted', '${c.textAccepted}'),
+          if (c.visualSimilarity != null) ScoreDetail('visual cosine', c.visualSimilarity!.toStringAsFixed(3)),
+          if (!c.textAccepted) ScoreDetail('visual-only floor', _cal.strictFloor.toStringAsFixed(3)),
+          ScoreDetail('final', c.score.toStringAsFixed(3)),
+        ]),
     ];
   }
 
@@ -368,6 +447,359 @@ class HybridSearchEngine implements SearchEngine {
     final dot = name.lastIndexOf('.');
     return (dot > 0 ? name.substring(0, dot) : name).replaceAll(RegExp(r'[_\-.]+'), ' ');
   }
+
+  // ---------------------------------------------------------------- visual
+
+  /// Visual queries: the image model decides. Candidates come only from the
+  /// vector index; recognised text can raise the score of an image that
+  /// already matches visually, never add one.
+  ///
+  /// Adjusted cosine = cosine - penalties:
+  ///  * UI screenshot for a query that did not ask for screenshots;
+  ///  * the head noun printed in the image of a people query or a screenshot
+  ///    (CLIP-family models read text: "MEN" looks like "a man").
+  /// People queries also need a detected face when faces were counted, and
+  /// never return UI screenshots unless asked to.
+  /// Kept: adjusted >= floor and >= best adjusted - margin.
+  Future<List<SearchResult>> _visual(QueryPlan plan, SearchFilters f, IndexStats stats) async {
+    final phrase = plan.visualPhrase.isNotEmpty ? plan.visualPhrase : (plan.head ?? '');
+    if (phrase.isEmpty) return const [];
+    final List<VectorHit> hits;
+    try {
+      final vector = await _queryVector(phrase, screenshot: plan.wantsScreenshot);
+      hits = await _store.searchVector(vector, modelId: _model.modelId, filters: f, limit: SearchTuning.vectorLimit);
+    } catch (e) {
+      debugPrint('Visual search unavailable: ${e.runtimeType}');
+      return const [];
+    }
+    final cal = _cal;
+    // Penalties only lower a cosine, so a hit below the floor stays below
+    // it: only plausible candidates are loaded.
+    final floor = plan.peopleSubject ? cal.peopleFloor : cal.floor;
+    final plausible = [for (final h in hits) if (h.similarity >= floor) h]
+      ..sort((a, b) => b.similarity.compareTo(a.similarity));
+    final top = plausible.take(SearchTuning.verifyTopK).toList();
+    final records = await Future.wait(top.map((h) => _store.get(h.imageId)));
+    final forms = plan.headForms;
+    final support = {...forms, ...plan.modifiers};
+    final scored = <_VisualCandidate>[];
+    for (var i = 0; i < top.length; i++) {
+      final r = records[i];
+      if (r == null) continue;
+      final cos = top[i].similarity;
+      var adjusted = cos;
+      final details = <ScoreDetail>[
+        const ScoreDetail('route', 'visual'),
+        ScoreDetail('visual cosine', cos.toStringAsFixed(3)),
+      ];
+      final words = TextMatching.words(r.ocrText);
+      final printed = forms.any((w) => TextMatching.hasWord(words, w));
+      final isScreen = r.image.kind == ImageKind.screenshot || r.screen.type != ScreenType.unknown;
+      if (isScreen && !plan.wantsScreenshot) {
+        if (plan.peopleSubject) continue;
+        adjusted -= cal.screenshotPenalty;
+        details.add(ScoreDetail('screenshot penalty', '-${cal.screenshotPenalty}'));
+      }
+      if (printed && (plan.peopleSubject || isScreen)) {
+        adjusted -= cal.typographicPenalty;
+        details.add(ScoreDetail('word printed in image', '-${cal.typographicPenalty}'));
+      }
+      if (plan.peopleSubject && r.image.kind == ImageKind.photo && r.faceCount != null) {
+        details.add(ScoreDetail('faces', '${r.faceCount}'));
+        if (r.faceCount == 0) continue;
+      }
+      final supported = [
+        if (!isScreen)
+          for (final w in support)
+            if (TextMatching.hasWord(words, w)) w,
+      ];
+      scored.add(_VisualCandidate(r, cos, adjusted, details, supported));
+    }
+    if (scored.isEmpty) return const [];
+    final best = scored.map((e) => e.adjusted).reduce(math.max);
+    double score(_VisualCandidate e) =>
+        cal.strength(e.adjusted) + (e.supported.isNotEmpty ? SearchTuning.ocrSupportBoost : 0);
+    final accepted = [
+      for (final e in scored)
+        if (e.adjusted >= floor && e.adjusted >= best - cal.margin) e,
+    ]..sort((a, b) => score(b).compareTo(score(a)));
+    final kept = _collapse(accepted, (e) => e.record);
+    final q = ParsedQuery(raw: '', semanticText: phrase, keywords: const [], dateRange: f.dateRange);
+    return [
+      for (final e in kept.take(SearchTuning.maxResults))
+        SearchResult(
+          image: e.record.image,
+          score: score(e),
+          reasons: [
+            MatchReason(
+              signal: MatchSignal.visualContent,
+              description: 'Looks like “$phrase”',
+              matchedTerms: [phrase],
+              strength: cal.strength(e.adjusted),
+            ),
+            if (e.supported.isNotEmpty)
+              MatchReason(
+                signal: MatchSignal.textInImage,
+                description: 'Also contains the text ${_quoteList(e.supported)}',
+                matchedTerms: e.supported,
+                snippet: TextMatching.snippet(e.record.ocrText, e.supported, radius: SearchTuning.snippetRadius),
+              ),
+            ..._filterReasons(e.record.image, q, f),
+          ],
+          details: [
+            ...e.details,
+            ScoreDetail('adjusted cosine', e.adjusted.toStringAsFixed(3)),
+            ScoreDetail('floor / margin', '$floor / ${cal.margin} (best ${best.toStringAsFixed(3)})'),
+            if (e.supported.isNotEmpty) ScoreDetail('ocr support', '+${SearchTuning.ocrSupportBoost}'),
+            ScoreDetail('final', score(e).toStringAsFixed(3)),
+          ],
+        ),
+    ];
+  }
+
+  // ---------------------------------------------------------- conversation
+
+  /// Conversation queries: chat screenshots whose *title* names the person
+  /// (whole word, so "Jamie Fox" counts and "Jamieson" does not). Other
+  /// screenshots whose text mentions the person, and group chats named
+  /// after them, form the separate "mentions" group. Topic words ("about the
+  /// wifi") must appear in the messages. A person is only ever matched from
+  /// text, never from how anyone looks.
+  Future<(List<SearchResult>, List<SearchResult>)> _conversation(QueryPlan plan, SearchFilters f) async {
+    final name = plan.person!;
+    final folded = TextMatching.normalize(name);
+    final chats = await _store.screenInfos(types: const {ScreenType.chat}, filters: f);
+    final topicTerms = plan.textTerms;
+    final topicExpansions = _expander.expand(topicTerms);
+    bool topicIn(String text) {
+      if (topicTerms.isEmpty) return true;
+      final words = TextMatching.words(text);
+      final norm = TextMatching.normalize(text);
+      if (topicTerms.any((t) => TextMatching.hasWord(words, t))) return true;
+      return topicExpansions
+          .any((e) => e.isPhrase ? TextMatching.containsPhrase(norm, e.text) : TextMatching.hasWord(words, e.text));
+    }
+
+    final primaryIds = <String>[];
+    final groupIds = <String>[];
+    for (final e in chats.entries) {
+      final title = e.value.chatTitle;
+      // The exact folded word: "Jamie Fox" and "Jamie 🌻" yes, "Jamieson" no.
+      if (title == null || !TextMatching.words(title).contains(folded)) continue;
+      if (!topicIn(e.value.chatBody)) continue;
+      (e.value.isGroupChat ? groupIds : primaryIds).add(e.key);
+    }
+    final hits = await _store.searchText(terms: [name], filters: f, limit: SearchTuning.textLimitPerTerm);
+    final mentionIds = <String>[...groupIds];
+    for (final h in hits) {
+      if (!primaryIds.contains(h.imageId) && !mentionIds.contains(h.imageId)) mentionIds.add(h.imageId);
+    }
+    final primaryRecords = (await Future.wait(primaryIds.map(_store.get))).whereType<IndexRecord>().toList();
+    final mentionRecords = (await Future.wait(mentionIds.take(SearchTuning.verifyTopK).map(_store.get)))
+        .whereType<IndexRecord>()
+        .where((r) => TextMatching.words(r.ocrText).contains(folded) && topicIn(r.ocrText))
+        .toList();
+    int newest(IndexRecord a, IndexRecord b) => b.image.createdAt.compareTo(a.image.createdAt);
+    primaryRecords.sort(newest);
+    mentionRecords.sort(newest);
+    final shownName = name[0].toUpperCase() + name.substring(1);
+    final topicWords = [...topicTerms, ...topicExpansions.map((e) => e.text)];
+    final q = ParsedQuery(raw: '', semanticText: '', keywords: const [], dateRange: f.dateRange);
+    final primary = [
+      for (final r in _collapse(primaryRecords, (r) => r))
+        SearchResult(
+          image: r.image,
+          score: 1,
+          reasons: [
+            MatchReason(
+              signal: MatchSignal.conversation,
+              description: 'Conversation with “${r.screen.chatTitle}”',
+              matchedTerms: [name],
+              snippet: topicTerms.isEmpty
+                  ? null
+                  : TextMatching.snippet(r.screen.chatBody, topicWords, radius: SearchTuning.snippetRadius),
+            ),
+            ..._filterReasons(r.image, q, f),
+          ],
+          details: [
+            const ScoreDetail('route', 'conversation'),
+            ScoreDetail('chat title', r.screen.chatTitle ?? ''),
+            ScoreDetail('screen type', '${r.screen.type.name} (${r.screen.confidence.toStringAsFixed(2)})'),
+            if (r.screen.sourceApp != null) ScoreDetail('app', r.screen.sourceApp!),
+            if (topicTerms.isNotEmpty) ScoreDetail('topic', topicTerms.join(', ')),
+          ],
+        ),
+    ];
+    final mentions = [
+      for (final r in _collapse(mentionRecords, (r) => r).take(SearchTuning.maxMentions))
+        SearchResult(
+          image: r.image,
+          score: 0.5,
+          group: ResultGroup.mentions,
+          reasons: [
+            MatchReason(
+              signal: MatchSignal.textInImage,
+              description: groupIds.contains(r.image.id)
+                  ? 'Group chat “${r.screen.chatTitle}”'
+                  : r.screen.isChat
+                      ? 'Mentions “$shownName” in a chat with “${r.screen.chatTitle ?? 'someone else'}”'
+                      : 'Mentions “$shownName”',
+              matchedTerms: [name],
+              snippet: TextMatching.snippet(r.ocrText, [name], radius: SearchTuning.snippetRadius),
+            ),
+            ..._filterReasons(r.image, q, f),
+          ],
+          details: [
+            const ScoreDetail('route', 'conversation / mentions'),
+            ScoreDetail('screen type', r.screen.type.name),
+            if (r.screen.chatTitle != null) ScoreDetail('chat title', r.screen.chatTitle!),
+          ],
+        ),
+    ];
+    return (primary, mentions);
+  }
+
+  // --------------------------------------------------------------- screens
+
+  /// Hybrid queries about a kind of screen ("screenshot of the map to the
+  /// hotel", "wifi settings screenshot") or a screenshot of a visual thing
+  /// ("screenshot of men's jackets").
+  ///  * With a screen-type hint: screenshots of that type, the text terms
+  ///    must appear (whole word or a related term), ranked by text coverage
+  ///    and then visual similarity.
+  ///  * Without one: a screenshot needs text evidence for the head noun or a
+  ///    modifier AND a visual match, or a clear visual match on its own.
+  Future<List<SearchResult>> _screens(QueryPlan plan, SearchFilters f, IndexStats stats, bool semantic) async {
+    final type = plan.screenType;
+    final terms = [for (final t in plan.textTerms) if (!kScreenNouns.containsKey(t)) t];
+    final expansions = _expander.expand(terms);
+    final visual = <String, double>{};
+    if (semantic && plan.visualPhrase.isNotEmpty) {
+      try {
+        final vector = await _queryVector(plan.visualPhrase, screenshot: true);
+        for (final h in await _store.searchVector(vector,
+            modelId: _model.modelId, filters: f, limit: SearchTuning.vectorLimit)) {
+          visual[h.imageId] = h.similarity;
+        }
+      } catch (e) {
+        debugPrint('Visual search unavailable: ${e.runtimeType}');
+      }
+    }
+    final ids = <String>{};
+    if (type != null) {
+      ids.addAll((await _store.screenInfos(types: {type}, filters: f)).keys);
+    } else {
+      for (final t in terms) {
+        for (final h in await _store.searchText(terms: [t], filters: f, limit: SearchTuning.textLimitPerTerm)) {
+          ids.add(h.imageId);
+        }
+      }
+      for (final e in visual.entries) {
+        if (e.value >= _cal.strictFloor) ids.add(e.key);
+      }
+    }
+    final records =
+        (await Future.wait(ids.take(SearchTuning.verifyTopK * 2).map(_store.get))).whereType<IndexRecord>().toList();
+    final cal = _cal;
+    final scored = <_ScreenCandidate>[];
+    for (final r in records) {
+      final isScreen = r.image.kind == ImageKind.screenshot || r.screen.type != ScreenType.unknown;
+      if (type == null && !isScreen) continue;
+      final words = TextMatching.words(r.ocrText);
+      final norm = TextMatching.normalize(r.ocrText);
+      final matched = <String>[];
+      var covered = 0.0;
+      for (final t in terms) {
+        if (words.contains(TextMatching.normalize(t))) {
+          covered += 1;
+          matched.add(t);
+          continue;
+        }
+        // Only a plural/singular form ("Hotels" chip for "hotel"): weaker,
+        // interface chips often carry the plural.
+        if (TextMatching.hasWord(words, t)) {
+          covered += SearchTuning.inflectedOnlyWeight;
+          matched.add(t);
+          continue;
+        }
+        final related = [
+          for (final e in expansions)
+            if (e.concept.split(' ').contains(t) &&
+                (e.isPhrase ? TextMatching.containsPhrase(norm, e.text) : TextMatching.hasWord(words, e.text)))
+              e.text,
+        ];
+        if (related.isNotEmpty) {
+          covered += SearchTuning.expansionWeight;
+          matched.add(related.first);
+        }
+      }
+      final coverage = terms.isEmpty ? 1.0 : covered / terms.length;
+      final cos = visual[r.image.id] ?? 0;
+      if (type == null) {
+        final agree = coverage > 0 && cos >= cal.floor - cal.screenshotPenalty;
+        if (!agree && cos < cal.strictFloor) continue;
+      } else if (coverage <= 0) {
+        continue;
+      }
+      scored.add(_ScreenCandidate(r, coverage, cos, matched));
+    }
+    if (scored.isEmpty) return const [];
+    final bestCoverage = scored.map((e) => e.coverage).reduce(math.max);
+    double score(_ScreenCandidate e) => e.coverage + 0.5 * SearchTuning.visualWeight * cal.strength(e.cos);
+    final ranked = [
+      for (final e in scored)
+        if (e.coverage >= SearchTuning.screenRelativeCut * bestCoverage) e,
+    ]..sort((a, b) {
+        final c = score(b).compareTo(score(a));
+        return c != 0 ? c : b.record.image.createdAt.compareTo(a.record.image.createdAt);
+      });
+    final kept = _collapse(ranked, (e) => e.record);
+    final q = ParsedQuery(raw: '', semanticText: '', keywords: const [], dateRange: f.dateRange);
+    return [
+      for (final e in kept.take(SearchTuning.maxResults))
+        SearchResult(
+          image: e.record.image,
+          score: score(e),
+          reasons: [
+            if (type != null) MatchReason(signal: MatchSignal.screenType, description: _screenLabel(type)),
+            if (e.matched.isNotEmpty)
+              MatchReason(
+                signal: MatchSignal.textInImage,
+                description: 'Contains the text ${_quoteList(e.matched)}',
+                matchedTerms: e.matched,
+                snippet: TextMatching.snippet(e.record.ocrText, e.matched, radius: SearchTuning.snippetRadius),
+              ),
+            if (e.cos >= cal.floor)
+              MatchReason(
+                signal: MatchSignal.visualContent,
+                description: 'Looks like “${plan.visualPhrase}”',
+                strength: cal.strength(e.cos),
+              ),
+            ..._filterReasons(e.record.image, q, f),
+          ],
+          details: [
+            const ScoreDetail('route', 'screens'),
+            ScoreDetail('screen type', '${e.record.screen.type.name} (${e.record.screen.confidence.toStringAsFixed(2)})'),
+            ScoreDetail('text coverage', e.coverage.toStringAsFixed(2)),
+            if (visual.isNotEmpty) ScoreDetail('visual cosine', e.cos.toStringAsFixed(3)),
+            ScoreDetail('final', score(e).toStringAsFixed(3)),
+          ],
+        ),
+    ];
+  }
+
+  static String _screenLabel(ScreenType t) => switch (t) {
+        ScreenType.chat => 'Chat screenshot',
+        ScreenType.map => 'Map screenshot',
+        ScreenType.web => 'Web page screenshot',
+        ScreenType.shop => 'Shopping screenshot',
+        ScreenType.social => 'Social media screenshot',
+        ScreenType.settings => 'Settings screenshot',
+        ScreenType.receipt => 'Receipt or document screenshot',
+        ScreenType.email => 'Email screenshot',
+        ScreenType.menu => 'Menu screenshot',
+        ScreenType.other || ScreenType.unknown => 'Screenshot',
+      };
 
   // --------------------------------------------------------------- browse
 
@@ -557,4 +989,23 @@ class _Candidate {
   bool hasExactText = false;
   bool textAccepted = false;
   IndexRecord? record;
+}
+
+class _VisualCandidate {
+  _VisualCandidate(this.record, this.cos, this.adjusted, this.details, this.supported);
+  final IndexRecord record;
+  final double cos;
+  final double adjusted;
+  final List<ScoreDetail> details;
+
+  /// Head noun / modifiers also found as text in the (photo) image.
+  final List<String> supported;
+}
+
+class _ScreenCandidate {
+  _ScreenCandidate(this.record, this.coverage, this.cos, this.matched);
+  final IndexRecord record;
+  final double coverage;
+  final double cos;
+  final List<String> matched;
 }

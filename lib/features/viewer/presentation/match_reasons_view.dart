@@ -10,6 +10,8 @@ IconData iconForSignal(MatchSignal s) => switch (s) {
       MatchSignal.date => Icons.calendar_today_outlined,
       MatchSignal.imageType => Icons.screenshot_outlined,
       MatchSignal.filename => Icons.insert_drive_file_outlined,
+      MatchSignal.conversation => Icons.forum_outlined,
+      MatchSignal.screenType => Icons.smartphone_outlined,
     };
 
 /// Plain-language confidence; null when the signal has no strength.

@@ -20,7 +20,7 @@ abstract final class PersonMentions {
       r'(?:conversations?|chats?|messages?|texts?|threads?|dms?|sms|emails?|calls?|whatsapps?|'
       r'sent|send|sending|texted|messaged|wrote|replied|talked|talking|spoke|speaking|chatted)';
 
-  static const _speechVerbs = r'(?:sent|texted|messaged|wrote|replied|said|told|asked)';
+  static const _speechVerbs = r'(?:sent|send|texted|messaged|wrote|write|replied|said|say|says|told|tell|asked|mentioned)';
 
   static final List<RegExp> _patterns = [
     // "conversation with Jamie", "messages from alex", "sent to Sam", "talking to mom"

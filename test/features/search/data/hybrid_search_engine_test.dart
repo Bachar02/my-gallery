@@ -30,28 +30,55 @@ void main() {
   });
 
   group('text retrieval', () {
-    test('a name is matched only as text, with snippet, filtered to screenshots', () async {
+    test('conversation: the chat title names the person; body-only mentions are a separate group', () async {
       store
-        ..put(record(galleryImage('chat'), text: 'Jamie\nHey! Are we still on for Berlin?\nYes, flight lands 10:40'))
+        ..put(record(galleryImage('chat'), text: 'Jamie\nHey! Are we still on for Berlin?\nYes, flight lands 10:40',
+            screen: chat('Jamie', body: 'Hey! Are we still on for Berlin?\nYes, flight lands 10:40')))
+        ..put(record(galleryImage('mention'), text: 'Alex\nAsk Jamie for the keys',
+            screen: chat('Alex', body: 'Ask Jamie for the keys')))
+        ..put(record(galleryImage('jamieson'), text: 'Jamieson Plumbing\nAppointment confirmed',
+            screen: chat('Jamieson Plumbing', body: 'Appointment confirmed')))
         ..put(record(galleryImage('notes'), text: 'Meeting notes\nQ3 roadmap'))
         ..put(record(galleryImage('photo', kind: ImageKind.photo), text: 'Jamie'));
 
       final r = await engine().search('Find the screenshot of my conversation with Jamie');
 
-      expect(ids(r), ['chat']);
+      expect([for (final x in r.primary) x.image.id], ['chat']);
+      expect([for (final x in r.mentions) x.image.id], ['mention']);
+      expect(r.intent, SearchIntent.conversation);
+      expect(r.mentionsLabel, 'Mentions Jamie');
       expect(r.semanticSearchUsed, isFalse);
-      final reasons = r.results.single.reasons;
-      final text = reasons.firstWhere((x) => x.signal == MatchSignal.textInImage);
-      expect(text.description, 'Contains the text “jamie”');
-      expect(text.matchedTerms, ['jamie']);
-      expect(text.snippet, contains('Jamie'));
-      expect(descriptions(r.results.single), contains('Screenshot'));
+      final primary = r.primary.single.reasons.firstWhere((x) => x.signal == MatchSignal.conversation);
+      expect(primary.description, 'Conversation with “Jamie”');
+      expect(r.mentions.single.reasons.first.description, 'Mentions “Jamie” in a chat with “Alex”');
+      expect(r.mentions.single.reasons.first.snippet, contains('Jamie'));
+      expect(descriptions(r.primary.single), contains('Screenshot'));
       // Never claims to recognise a person.
-      for (final d in descriptions(r.results.single)) {
-        expect(d.toLowerCase(), isNot(contains('person')));
-        expect(d.toLowerCase(), isNot(contains('face')));
+      for (final res in r.results) {
+        for (final d in descriptions(res)) {
+          expect(d.toLowerCase(), isNot(contains('person')));
+          expect(d.toLowerCase(), isNot(contains('face')));
+        }
       }
       expect(r.query.kind, ImageKind.screenshot);
+    });
+
+    test('conversation topic words must appear in the messages', () async {
+      store
+        ..put(record(galleryImage('wifi'), text: 'Priya\nnetwork CabinNet, password pinecone2026',
+            screen: chat('Priya', body: 'network CabinNet, password pinecone2026')))
+        ..put(record(galleryImage('other'), text: 'Priya\nSee you tomorrow', screen: chat('Priya', body: 'See you tomorrow')));
+      final r = await engine().search('what did Priya say about the wifi');
+      expect([for (final x in r.primary) x.image.id], ['wifi'], reason: 'password is related to wifi');
+    });
+
+    test('group chats named after the person are mentions, not the conversation', () async {
+      store.put(record(galleryImage('group'), text: "Jamie's birthday\nYou, Jamie, Alex",
+          screen: chat("Jamie's birthday", body: 'Who brings the cake?', group: true)));
+      final r = await engine().search('chat with Jamie');
+      expect(r.primary, isEmpty);
+      expect([for (final x in r.mentions) x.image.id], ['group']);
+      expect(r.mentions.single.reasons.first.description, 'Group chat “Jamie\'s birthday”');
     });
 
     test('intent expansion: literal matches outrank expansion matches, reasons say why', () async {
@@ -80,10 +107,10 @@ void main() {
 
     test('prefix-only matches are not evidence; plurals are', () async {
       store
-        ..put(record(galleryImage('cardigan'), text: 'Wool cardigan, size M'))
-        ..put(record(galleryImage('cars'), text: 'Used cars for sale'));
-      final r = await engine().search('car');
-      expect(ids(r), ['cars']);
+        ..put(record(galleryImage('receiptless'), text: 'Receiptless returns policy'))
+        ..put(record(galleryImage('receipts'), text: 'All receipts for March'));
+      final r = await engine().search('receipt');
+      expect(ids(r), ['receipts']);
     });
 
     test('accent-insensitive verification', () async {
@@ -117,7 +144,7 @@ void main() {
       for (var i = 0; i < 10; i++) {
         store.put(record(galleryImage('trip$i'), text: 'Trip summary $i'));
       }
-      final r = await engine().search('Find the conversation where we discussed our trip to Germany');
+      final r = await engine().search('our trip to Germany');
       expect(ids(r).first, 'both');
       expect(ids(r), contains('germany'));
       expect(ids(r).where((id) => id.startsWith('trip')), isEmpty);
@@ -154,14 +181,14 @@ void main() {
     test('absolute floor and margin to the best hit', () async {
       final r = await engine().search('Show me the picture of the red car');
       expect(r.semanticSearchUsed, isTrue);
-      expect(model.prompts.single, 'a photo of red car');
+      expect(model.prompts.single, 'a photo of the red car.');
       // best 0.30 -> keep >= max(floor, 0.30 - margin)
       final cut = [SearchTuning.visualFloor, 0.30 - SearchTuning.visualMargin].reduce((a, b) => a > b ? a : b);
       final expected = ['v30', 'v27', 'v24', 'v21'].where((id) => int.parse(id.substring(1)) / 100 >= cut - 1e-9);
       expect(ids(r), expected.toList());
       final reason = r.results.first.reasons.single;
       expect(reason.signal, MatchSignal.visualContent);
-      expect(reason.description, 'Visually similar to “red car”');
+      expect(reason.description, 'Looks like “the red car”');
       expect(reason.strength, greaterThan(0));
       expect(r.results.first.score, greaterThan(r.results.last.score));
     });
@@ -176,7 +203,7 @@ void main() {
 
     test('screenshot filter uses a screenshot prompt', () async {
       await engine().search('screenshot of a red car');
-      expect(model.prompts.single, 'a screenshot of red car');
+      expect(model.prompts.single, 'a screenshot of a red car.');
     });
 
     test('model that fails to load degrades to text-only', () async {
@@ -276,19 +303,21 @@ void main() {
         'conversation': Float32List.fromList([0, 0, 0, 1]),
       });
       store
-        ..put(record(galleryImage('jamie', created: DateTime(2026, 11, 2)), text: jamieText, embedding: vec(0.197, 0.233)))
-        ..put(record(galleryImage('sam', created: DateTime(2026, 10, 15)), text: samText, embedding: vec(0.221, 0.208)))
-        ..put(record(galleryImage('alex', created: DateTime(2026, 10, 20)), text: alexText, embedding: vec(0.264, 0.210)))
+        ..put(record(galleryImage('jamie', created: DateTime(2026, 11, 2)), text: jamieText, embedding: vec(0.197, 0.233),
+            screen: chat('Jamie', body: jamieText)))
+        ..put(record(galleryImage('sam', created: DateTime(2026, 10, 15)), text: samText, embedding: vec(0.221, 0.208),
+            screen: chat('Sam', body: samText)))
+        ..put(record(galleryImage('alex', created: DateTime(2026, 10, 20)), text: alexText, embedding: vec(0.264, 0.210),
+            screen: chat('Alex', body: alexText)))
         ..put(record(galleryImage('receipt', created: DateTime(2026, 11, 1)), text: receiptText,
             embedding: vec(0.230, 0.189)));
     });
 
-    test('conversation with Jamie: the name is required text, never visual', () async {
+    test('conversation with Jamie: matched from the chat title, never visually', () async {
       final r = await engine().search('Find the screenshot of my conversation with Jamie');
-      expect(ids(r), ['jamie']);
-      expect(model.prompts, ['a screenshot of conversation'], reason: 'name not sent to CLIP');
-      expect(r.query.semanticText, 'conversation');
-      expect(descriptions(r.results.single), contains('Contains the text “jamie”'));
+      expect([for (final x in r.primary) x.image.id], ['jamie']);
+      expect(model.prompts, isEmpty, reason: 'the image model is not asked about people');
+      expect(descriptions(r.primary.single), contains('Conversation with “Jamie”'));
     });
 
     test('a name that appears in no image gives an empty result', () async {
@@ -325,9 +354,10 @@ void main() {
       expect(ids(r), ['bankapp']);
     });
 
-    test('trip to Germany still finds the Sam chat (no false person)', () async {
+    test('trip to Germany finds the Sam chat (chat screens with the topic, no false person)', () async {
       final r = await engine().search('Find the conversation where we discussed our trip to Germany');
-      expect(ids(r).first, 'sam');
+      expect(r.intent, SearchIntent.hybrid);
+      expect(ids(r), ['sam']);
     });
   });
 
