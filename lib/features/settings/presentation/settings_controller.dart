@@ -6,7 +6,7 @@ import '../../home/presentation/indexing_controller.dart';
 import '../../home/presentation/recent_searches_controller.dart';
 
 /// App version shown in About. Keep in sync with `version:` in pubspec.yaml.
-const appVersion = '1.0.0';
+const appVersion = '2.0.0';
 
 /// State of the "Delete local index" operation.
 final deleteIndexProvider = NotifierProvider.autoDispose<DeleteIndexController, AsyncValue<void>>(

@@ -5,12 +5,9 @@ resolved first. Background is in `docs/SECURITY_AUDIT.md` and `docs/QA_REPORT.md
 
 ## 0. Blockers for this release
 
-- [ ] **BLOCKER (commercial release only):** the MobileCLIP-S0 weights are under the Apple ML
-      Research Model License (research only). Get legal sign-off, or replace the model
-      (`docs/AI_PIPELINE.md` §8) and re-run calibration (`tool/calibrate_clip.py`) and the
-      search evaluation (`test/eval/search_eval_test.dart`).
-- [ ] Register the model, ONNX Runtime and ML Kit licences in the in-app licence page
-      (`LicenseRegistry.addLicense`). Today they are bundled as files but not shown (S-8).
+- [x] ~~Commercial-release blocker: MobileCLIP-S0 research-only weights~~. Resolved in 2.0:
+      the visual model is SigLIP B/16 (Apache-2.0); see `docs/SEARCH_DESIGN.md` §4.
+- [x] Model, ONNX Runtime and ML Kit licences are registered on the in-app licence page.
 
 ## 1. Version
 
@@ -32,15 +29,16 @@ visual model**, and the app then silently runs text-only.
 ```
 py -3.13 -m venv tool/.venv
 tool/.venv/Scripts/python -m pip install -r tool/requirements.txt
-tool/.venv/Scripts/python -I tool/fetch_models.py      # fp32 export, sha256-verified
-tool/.venv/Scripts/python -I tool/install_assets.py    # -> assets/models/mobileclip_s0/
+tool/.venv/Scripts/python -I tool/fetch_models.py siglip_b16   # fp32 export, ~815 MB, sha256-verified
+tool/.venv/Scripts/python -I tool/quantize_siglip.py           # int8 encoders
+tool/.venv/Scripts/python -I tool/install_assets.py            # -> assets/models/siglip_b16/
 ```
 
-- [ ] `assets/models/mobileclip_s0/` contains `mobileclip_s0_vision_fp16w.onnx`
-      (22,866,566 B), `mobileclip_s0_text_w8.onnx` (42,896,411 B), `bpe_merges.txt`,
-      `preprocessor_config.json` and both `LICENSE_*.txt` files.
-- [ ] `flutter test test/ml/mobile_clip_assets_test.dart` passes (checks the sizes in
-      `MobileClipAssets`).
+- [ ] `assets/models/siglip_b16/` contains `siglip_b16_vision_int8.onnx` (115,852,766 B),
+      `siglip_b16_text_int8.onnx` (111,622,590 B), `spiece_vocab.tsv`,
+      `preprocessor_config.json`, `LICENSE_APACHE_2.0.txt` and `NOTICE.txt`.
+- [ ] `flutter test test/ml/siglip_assets_test.dart` passes (checks the sizes in
+      `SiglipAssets`).
 - [ ] Check the APK: `unzip -l <apk> | grep onnx` lists both models.
 
 ## 3. Signing
@@ -124,9 +122,9 @@ aapt2 dump badging    build/app/outputs/flutter-apk/app-release.apk | head
 
 ## 7. Licences and attributions
 
-- [ ] In-app "Open-source licenses" shows the Dart/Flutter packages, plus (after the fix)
-      MobileCLIP (`LICENSE_APPLE_AMLR.txt`, `LICENSE_XENOVA_EXPORT.txt`), ONNX Runtime (MIT)
-      and the ML Kit terms.
+- [ ] In-app "Open-source licenses" shows the Dart/Flutter packages, plus SigLIP (notice and
+      Apache-2.0 text), ONNX Runtime (MIT) and the ML Kit terms (text recognition and face
+      detection).
 - [ ] No GPL/LGPL/MPL dependencies were added since the last audit (check the `pubspec.lock`
       diff).
 

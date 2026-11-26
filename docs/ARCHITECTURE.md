@@ -8,8 +8,8 @@ INTERNET permission**, so images, extracted text and embeddings cannot leave the
 
 ```
 MediaStore ──► GalleryRepository ──► IndexingService ──► IndexStore (SQLite)
-                 (photo_manager)       │   ├─ OcrEngine (ML Kit, bundled Latin model)
-                                       │   ├─ SemanticModel.embedImage (MobileCLIP-S0, ONNX)
+                 (photo_manager)       │   ├─ OcrEngine (ML Kit, Latin; lines + boxes) -> ScreenAnalyzer, FaceCounter
+                                       │   ├─ SemanticModel.embedImage (SigLIP B/16 int8, ONNX)
                                        │   └─ dHash (near-duplicates)
 User query ──► QueryParser ──► SearchEngine ──► IndexStore.searchText (FTS5, bm25)
                (dates, type,      (hybrid)     IndexStore.searchVector (cosine, in-memory)
@@ -18,38 +18,41 @@ User query ──► QueryParser ──► SearchEngine ──► IndexStore.sea
 ```
 
 ### Retrieval rules (reliability)
-* Text evidence (OCR / filename) and visual evidence (CLIP) are scored separately,
-  then fused. Each result carries `MatchReason`s that state *exactly* what matched.
+* Each query is classified first (visual, text in image, conversation, hybrid; see
+  docs/SEARCH_DESIGN.md) and only the evidence that fits the intent may create a result:
+  the image model for visual queries, recognised text for text queries, the chat title
+  for conversations. Each result carries `MatchReason`s that state *exactly* what matched.
 * Visual matches must pass an absolute similarity floor **and** a margin relative to
   the best hit, so a query with no real match returns "nothing found" rather than
   the least-bad images.
-* Names are only "matched" when the name literally appears in recognised text. The
-  app never claims to identify a person from their face or appearance.
+* Names are only "matched" from text: the chat title for a conversation, or the text
+  of the screenshot (shown separately as a mention). Faces are only counted; the app never
+  identifies a person or infers attributes from appearance.
 
 ## Layout
 
 ```
 lib/
-  main.dart, app/          app shell, theme hookup, providers      (Team Lead / UX)
-  domain/                  shared models + interfaces              (Team Lead only)
-  core/design/             design tokens, theme                    (Agent 1 UX)
-  core/widgets/            reusable components                     (Agent 1 UX)
-  features/onboarding|home|search|viewer|settings/presentation     (Agent 1 UX)
+  main.dart, app/          app shell, theme hookup, providers
+  domain/                  shared models + interfaces
+  core/design/             design tokens, theme
+  core/widgets/            reusable components
+  features/onboarding|home|search|viewer|settings/presentation
   features/gallery/        PhotoManagerGalleryRepository, AndroidImageActions,
-                           permissions                             (Agent 2 Android)
-  features/indexing/       DefaultIndexingService                  (Agent 3 AI)
-  features/search/domain|data  RuleBasedQueryParser, HybridSearchEngine (Agent 3 AI)
-  ml/                      MlKitOcrEngine, MobileClipModel, CLIP tokenizer (Agent 3 AI)
-  data/db/                 SqliteIndexStore, vector index           (Agent 4 DB)
-android/                   manifest, permissions, Gradle           (Agent 2 Android)
-assets/models/             MobileCLIP ONNX + tokenizer             (Agent 3 AI)
+                           permissions
+  features/indexing/       DefaultIndexingService, ScreenAnalyzer
+  features/search/domain|data  RuleBasedQueryParser, QueryAnalyzer, HybridSearchEngine
+  ml/                      MlKitOcrEngine, MlKitFaceCounter, SiglipModel, SigLIP tokenizer
+  data/db/                 SqliteIndexStore, vector index
+android/                   manifest, permissions, Gradle
+assets/models/             SigLIP ONNX + vocabulary (generated, not in git)
 test/                      unit/widget tests mirror lib/ paths     (each owner; QA audits)
-integration_test/          on-device flows                         (Agent 5 QA)
+integration_test/          on-device flows
 ```
 
 ## Rules
 * Features depend on `lib/domain` interfaces and `lib/app/providers.dart`, never on
   each other's concrete classes.
-* Only the owner edits a directory. Dependencies are added with `flutter pub add`.
+* Dependencies are added with `flutter pub add`.
 * No hard-coded demo data in `lib/`. Fakes live in `test/`.
 * No network calls at runtime. No analytics.

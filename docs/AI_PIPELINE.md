@@ -11,18 +11,22 @@ document covers the AI/ML implementations (`lib/ml/`, `lib/features/indexing/`,
 Indexing (DefaultIndexingService)
   GalleryRepository.listAllImages ─► diff vs IndexStore.indexedVersions()
      new / modified / old pipeline ─► per image, newest first:
-        originalFile ──► MlKitOcrEngine (Latin) ──────────────► ocrText
+        originalFile ──► MlKitOcrEngine (Latin) ─► ocrText + lines with boxes
+                         └► ScreenAnalyzer ─► screen type, chat title / messages
+        originalFile ──► MlKitFaceCounter (photos) ─► face count
           └ fallback: displayImage(2048 px) → temp file → OCR
         thumbnail(256 px) ─► dHash (background isolate) ──────► perceptualHash
-                          └► MobileClipModel.embedImage ──────► embedding (512-d)
+                          └► SiglipModel.embedImage ──────────► embedding (768-d)
      deleted ─► IndexStore.delete           batches of 20 ─► IndexStore.upsertAll
 
-Search (HybridSearchEngine)
-  query ─► RuleBasedQueryParser ─► keywords, "phrases", date range, kind, semantic text
+Search (HybridSearchEngine; intents and routing: docs/SEARCH_DESIGN.md)
+  query ─► RuleBasedQueryParser ─► keywords, "phrases", date range, kind
+        ─► QueryAnalyzer ─► intent (visual / text / conversation / hybrid), head noun,
+                            visual phrase, person, screen type
         ─► merge UI filters (UI wins)
         ─► no content? ─► IndexStore.browse (filters only)
         ─► per keyword / phrase / intent expansion: IndexStore.searchText
-        ─► MobileClipModel.embedText("a photo of …") ─► IndexStore.searchVector
+        ─► SiglipModel.embedText("a photo of ….") ─► IndexStore.searchVector
         ─► verify top 150 against stored records ─► score, thresholds
         ─► collapse near-duplicates ─► results + MatchReasons
 ```
@@ -36,8 +40,22 @@ Search (HybridSearchEngine)
 * One `TextRecognizer` is created lazily and reused (creating one loads the model).
   Recognition runs on ML Kit's worker thread; the file is decoded natively with
   EXIF orientation.
-* Output: lines in ML Kit block order, trimmed, blank lines dropped, joined with `\n`.
-  Failures are wrapped in `OcrException`.
+* Output: lines in ML Kit block order, trimmed, blank lines dropped, joined with `\n`,
+  plus every line's box normalised to the image size (the header size is read
+  without decoding; boxes are in the EXIF-rotated frame, so width and height are
+  swapped when only that fits). Failures are wrapped in `OcrException`.
+
+### Screen analysis — `lib/features/indexing/screen_analyzer.dart`
+Rule-based, from the OCR layout (details in docs/SEARCH_DESIGN.md §3): screen
+type with a confidence, and for chats the header title, a group flag and the
+message text. Measured on 141 screenshots with real ML Kit output: 138 types
+and 54/54 chat titles right.
+
+### Face count — `lib/ml/face/mlkit_face_counter.dart`
+ML Kit face detection (bundled `com.google.mlkit:face-detection`), fast mode,
+faces of at least 8% of the image width, photos only. Only the count is kept:
+no landmarks, contours, classification or tracking. 103 ms per image on the
+emulator.
 
 ### Query parsing — `lib/features/search/data/rule_based_query_parser.dart`
 Deterministic, English, with an injectable clock (`now`). Extracts:
@@ -63,6 +81,12 @@ matches are weighted at 0.55 of a literal match and reported as
 *Mentions “iban” (related to “bank details”)*.
 
 ### Hybrid search — `lib/features/search/data/hybrid_search_engine.dart`
+
+Version 2 classifies the query first and routes it (docs/SEARCH_DESIGN.md):
+visual queries are answered by the image model, conversations by chat titles,
+screen-type queries by screen type + text. The text route is the version 1
+pipeline below, with one change: a visual-only result always needs the strict
+visual floor.
 1. Parse; UI `SearchFilters` override the parsed date range / kind.
 2. Filter-only query (“screenshots from last week”) → `IndexStore.browse`,
    newest first. No content and no filters → empty.
@@ -141,7 +165,7 @@ matches are weighted at 0.55 of a literal match and reported as
 * Per image: OCR on `originalFile`, falling back to `displayImage(maxSide: 2048)`
   written to a temp file (deleted afterwards); `thumbnail(size: 256)` → dHash in a
   background isolate (`Isolate.run`) and the image embedding (decode/resize/tensor
-  prep in a background isolate inside `MobileClipModel`; inference on the ONNX
+  prep in a background isolate inside `SiglipModel`; inference on the ONNX
   Runtime plugin's background thread). The UI isolate only orchestrates.
 * Records are written with `upsertAll` every 20 items and before pausing.
 * An item whose OCR fails is counted in `failed`, not stored, and retried on the
@@ -163,111 +187,73 @@ matches are weighted at 0.55 of a literal match and reported as
   than its right neighbour. Pure Dart (`lib/ml/image/`), using `package:image`
   for decoding (pure Dart, so it runs in background isolates; JPEG/PNG/WebP/GIF/BMP).
 
-### Semantic model — `lib/ml/clip/`
-* `MobileClipModel`: MobileCLIP-S0 image and text encoders on ONNX Runtime (CPU),
-  512-d L2-normalised embeddings, `modelId = mobileclip_s0`.
-  `load()` never throws: it returns `false` (app runs text-only) when assets are
-  missing, the copy fails, or session creation fails (`lastLoadError` says why).
-  Models are copied once from the APK assets to the app-support directory
-  (ONNX Runtime needs a file path; app-support is not cleared like the cache),
-  verified by byte size, written atomically. Inference calls are serialised.
-* `ClipTokenizer`: pure-Dart CLIP byte-level BPE (normalise whitespace, lower-case,
-  CLIP pre-tokeniser regex, `</w>` suffix), SOT/EOT, truncation and zero padding
-  to 77. The vocabulary is derived from the bundled merge list (verified identical
-  to the export's `tokenizer.json` by `tool/install_assets.py`). Unit-tested
-  against 23 reference id sequences from the Hugging Face tokenizer, including
-  accents, emoji, CJK/Cyrillic, punctuation, numbers and truncation.
-  Not applied: Unicode NFC normalisation (precomposed input is unaffected).
-* `ClipImagePreprocessor`: exactly `preprocessor_config.json`: RGB, resize the
-  shortest edge to 256 (port of Pillow's antialiased bilinear filter, fixed-point
-  included), center crop 256×256, ×1/255, **no mean/std**, NCHW. Unit tests check
-  the result is **bit-identical** to Pillow (SHA-256 of the uint8 tensor) on all
-  five fixtures.
+### Semantic model — `lib/ml/siglip/`
+* `SiglipModel`: SigLIP B/16 image and text encoders on ONNX Runtime (CPU), 768-d
+  L2-normalised embeddings, `modelId = siglip_b16`. `load()` never throws: it
+  returns `false` (app runs text-only) when assets are missing, the copy fails, or
+  session creation fails (`lastLoadError` says why). Models are copied once from the
+  APK assets to the app-support directory (verified by byte size, written
+  atomically); copies of earlier models are deleted. Inference calls are serialised.
+* `SiglipTokenizer`: pure-Dart SentencePiece Unigram (Viterbi, `tokenizers`
+  tie-breaking, unknown penalty −10, Metaspace pre-tokenisation), `</s>` appended,
+  padded to 64 with `</s>`. Unit-tested against the Hugging Face tokenizer ids. The
+  export's precompiled NFKC map is not ported: the app only encodes captions it
+  builds itself (lower-case Latin text).
+* `SiglipImagePreprocessor`: exactly `preprocessor_config.json`: RGB, resize to
+  224×224 (Pillow bicubic, antialiased, aspect ratio not kept), ×1/255, (x−0.5)/0.5,
+  NCHW. Bit-identical to Pillow 13 on the fixtures, including Pillow's choice of
+  pass order (vertical first when it removes more than twice as many rows as the
+  horizontal pass removes columns).
 
 ## 3. Model and runtime choice
 
-**Model: MobileCLIP-S0** (Apple), ONNX export `Xenova/mobileclip_s0` on Hugging Face
-(separate `vision_model*.onnx` / `text_model*.onnx`, `tokenizer.json`,
-`preprocessor_config.json`). Inputs `pixel_values [N,3,256,256]` float and
-`input_ids [N,77]` int64; outputs `image_embeds` / `text_embeds` `[N,512]`.
+**Model: SigLIP base patch16-224** (Google, Apache-2.0), ONNX export
+`Xenova/siglip-base-patch16-224` (separate `vision_model.onnx` / `text_model.onnx`,
+`tokenizer.json`, `preprocessor_config.json`); outputs `pooler_output` (768-d).
+Chosen on the evaluation corpus over MobileCLIP-S0 (version 1, research-only
+weights) and OpenAI CLIP ViT-B/16 (MIT); comparison table in docs/SEARCH_DESIGN.md §4.
 
-**Why not the published `*_int8.onnx` files** (measured with desktop onnxruntime
-1.32 against the fp32 export, `tool/clip_reference.py` images/texts):
+**int8, not fp32/fp16** (`tool/quantize_siglip.py`): fp32 weights would need about
+800 MB of memory for both towers. Dynamic quantisation runs the transformer blocks'
+weight matrices as int8 MatMulInteger; attention products, the pooling head,
+layer norms and embeddings stay fp32. Image embeddings vs fp32: cosine median 0.986
+(min 0.929) on 713 images; retrieval mAP 0.785 vs 0.786. Quantising every MatMul
+(as the published `*_quantized.onnx` files do) gave median 0.958, min 0.845.
+**Bundled model assets: 229 MB** (vision 115.9 MB, text 111.6 MB, vocabulary 0.9 MB).
 
-| Variant | Size | Cosine vs fp32 | Desktop latency |
-|---|---|---|---|
-| vision fp32 | 45.5 MB | 1 | 30–77 ms |
-| vision `int8` (published, dynamic quant) | 11.8 MB | **0.10–0.18 (broken)** | 1570 ms |
-| vision weight-only int8 (ours) | 11.7 MB | 0.965–0.983 | 22 ms |
-| **vision fp16 weights (ours, shipped)** | **22.9 MB** | **0.99998–0.99999** | 21–46 ms |
-| text fp32 | 169.8 MB | 1 | 9 ms |
-| text `int8` (published) | 42.8 MB | 0.86–0.97 | 41–100 ms |
-| **text weight-only int8 (ours, shipped)** | **42.9 MB** | **0.99986–0.9999** | 10–11 ms |
-
-`tool/compress_weights.py` stores weights compactly while keeping every operation
-in fp32: fp16 initializers + `Cast`, or int8 per-output-channel weights + `Cast` +
-`Mul` (per-row for the token-embedding `Gather`, which stays int8 in memory).
-ONNX Runtime constant-folds the casts when the session is created, so inference
-runs the plain fp32 graph. **Bundled model assets: 66.3 MB** (22.9 + 42.9 MB +
-0.5 MB BPE merges). Estimated runtime memory after folding (fp32 weights): ~45 MB (vision) +
-~95 MB (text).
-
-**Runtime: `flutter_onnxruntime` 1.9.0** (MIT): actively maintained (monthly
-releases in 2026), wraps the official `com.microsoft.onnxruntime:onnxruntime-android:1.28.0`
-AAR (16 KB page-size compliant), runs inference on a Flutter background
-`TaskQueue` (not the UI thread), and builds with this Flutter/AGP. Rejected:
-`onnxruntime` (FFI; last release March 2024, old ORT), TFLite (no ready-made
-MobileCLIP conversion; local conversion is heavy and lossy).
+**Runtime: `flutter_onnxruntime` 1.9.0** (MIT), unchanged: wraps the official ONNX
+Runtime Android AAR and runs inference on a background thread.
 
 ## 4. Licenses
 
 | Component | License | Notes |
 |---|---|---|
-| MobileCLIP code (`apple/ml-mobileclip`) | MIT | not shipped |
-| **MobileCLIP-S0 weights** | **Apple Machine Learning Research Model License** (`apple/MobileCLIP-S0` on Hugging Face, `LICENSE_APPLE_AMLR.txt`) | **Research purposes only; excludes commercial products.** The Xenova export ships an earlier, permissive Apple sample-code license (`LICENSE_XENOVA_EXPORT.txt`). Our compressed files are model derivatives. **Needs legal review before any commercial release**; the model is swappable (see Limitations). |
-| ML Kit Text Recognition | Google ML Kit Terms of Service (free, on-device, bundled model) | Flutter plugin MIT |
+| **SigLIP base patch16-224 weights** | **Apache License 2.0** (`google/siglip-base-patch16-224`) | int8 copies are a derivative; `assets/models/siglip_b16/NOTICE.txt` states the modifications. Licence text bundled and shown on the licence page. |
+| ML Kit Text Recognition, Face Detection | Google ML Kit Terms of Service (free, on-device, bundled models) | Flutter plugins MIT |
 | ONNX Runtime | MIT | via `flutter_onnxruntime` (MIT) |
 | `package:image` | MIT | |
-| Test images | CC0 / public domain / generated | `test/ml/fixtures/clip_images/SOURCES.md` |
-
-Both license texts are bundled under `assets/models/mobileclip_s0/` so an
-“Open-source licenses” screen can show them.
+| Evaluation photos | CC BY 2.0 (Open Images V7), attribution in `tool/eval/photos_manifest.json` | not shipped, not in git |
+| Test images | CC0 / public domain / generated | `test/ml/fixtures/reference_images/SOURCES.md` |
 
 ## 5. Thresholds and calibration
 
-Constants live in `lib/features/search/domain/search_tuning.dart`, each with its
-rationale. Visual thresholds were calibrated with `tool/calibrate_clip.py`:
-92 images (16 categories × 5 Wikimedia Commons photos, labels from search results
-so somewhat noisy, plus 12 synthetic phone screenshots), 36 queries (31 with a
-matching category, 5 without: “purple elephant”, “a giraffe”, “fireworks”,
-“a wedding dress”, “a chess board”), prompt `a photo of <query>`, images embedded
-exactly as the app does (256 px thumbnail → preprocessing).
+Per-model constants: `lib/features/search/domain/visual_calibration.dart`. SigLIP
+cosines are small (relevant pairs median 0.048, non-relevant p99 0.044, max 0.104
+on the corpus), so the values differ from version 1:
 
-| | n | mean | percentiles |
-|---|---|---|---|
-| matching pairs | 155 | 0.217 | p5 0.117, p25 0.180, median 0.223 |
-| non-matching photo pairs | 2725 | 0.085 | p95 0.143, p99 0.188, max 0.279 |
-| screenshots vs photo queries | 432 | 0.092 | p95 0.168, max 0.260 |
+| Constant | SigLIP | Meaning |
+|---|---|---|
+| floor | 0.06 | a visual match needs at least this cosine |
+| peopleFloor | 0.045 | people queries (with the face and no-screenshot filters) |
+| margin | 0.07 | and at least best − margin |
+| full | 0.12 | cosine counted as full visual strength |
+| strictFloor | 0.10 | visual-only results of text and unknown-noun queries |
+| screenshotPenalty | 0.015 | UI screenshot for a photo query |
+| typographicPenalty | 0.015 | head noun printed in the image |
 
-| floor | margin | recall | precision | unmatched queries returning nothing |
-|---|---|---|---|---|
-| 0.17 | 0.07 | 0.74 | 0.92 | 4/5 |
-| 0.19 | 0.07 | 0.70 | 0.93 | 4/5 |
-| **0.20** | **0.07** | **0.66** | **0.94** | **5/5** |
-| 0.20 | 0.05 | 0.60 | 0.96 | 5/5 |
-| 0.20 | 0.10 | 0.66 | 0.88 | 5/5 |
-| 0.22 | 0.07 | 0.51 | 0.93 | 5/5 |
-
-Chosen: floor 0.20, margin 0.07 — the lowest floor at which no query without a
-matching image returned anything (at 0.19 “purple elephant” matched a bicycle at
-0.190). Recall is bounded by label noise and by weak categories (best “dog” match
-0.171: such queries return nothing rather than wrong images). Strong matches
-scored 0.25–0.33, hence full visual strength at 0.28.
-
-Text-side constants (relative cut 0.4, expansion weight 0.55, prefix penalty 0.5,
-term strength floor 0.6) are set by reasoning and covered by unit tests
-(`test/features/search/data/hybrid_search_engine_test.dart`); they should be
-revisited with real user galleries.
+Measured with `test/eval/real_corpus_eval_test.dart` (real features, the app's
+engine): per-class results in docs/QA_REPORT.md §9. Prompts: one caption
+(`a photo of {phrase}.` / `a screenshot of {phrase}.`); ensembles scored lower.
 
 ## 6. Performance
 
@@ -281,7 +267,7 @@ Desktop (Windows, onnxruntime 1.32 CPU, 4 threads; Dart JIT in `flutter test`):
 | Text encoder | 10 ms |
 | Tokenizer build (once) / encode | 45 ms / 0.05 ms |
 
-On-device numbers: section 9 (`integration_test/ml/clip_test.dart` prints `[ml-bench]` lines).
+On-device numbers: section 9 (`integration_test/ml/siglip_test.dart` prints `[ml-bench]` lines).
 
 ## 7. Privacy
 
@@ -301,16 +287,20 @@ embeddings and hashes are stored only in the local SQLite index.
 * Dates are DATE_TAKEN in device local time; seasons are northern-hemisphere.
 * Indexing is sequential (OCR then embedding per image); very large galleries take
   a while on first run (newest images first). OCR and embedding could be pipelined.
-* Tokenizer does not apply NFC normalisation.
-* Weights license (section 4): for a commercial release, replace MobileCLIP-S0 by a
-  permissively licensed model of the same family (e.g. an OpenCLIP/LAION model
-  exported to ONNX); `MobileClipAssets`, the preprocessing constants and
-  `SearchTuning.visual*` must then be re-derived with the same tools.
+* The tokenizer does not port the export's precompiled NFKC map (only app-built,
+  lower-case Latin captions are encoded).
+* Screen analysis is rule-based and tuned on synthetic look-alike layouts read by
+  real ML Kit; unusual apps (custom chat UIs, right-to-left text) may be classified
+  as `other`, which only disables the conversation route for them.
+* People queries match by appearance through the image model only; the face
+  filter needs a face of at least 8% of the image width.
+* The visual model is 229 MB and slower than version 1 (see §9); indexing a large
+  gallery the first time takes correspondingly longer.
 
 ## 9. On-device results
 
 Run on the Android emulator with
-`flutter test integration_test/ml/clip_test.dart -d <device>`:
+`flutter test integration_test/ml/siglip_test.dart -d <device>`:
 the test asserts cosine > 0.99 between on-device and desktop embeddings for
 5 images and 6 texts, checks that each image is closest to its own description,
 checks ML Kit OCR on rendered text, and prints latencies.
@@ -336,9 +326,10 @@ numbers one image costs roughly 0.1 s embedding + 0.2–0.5 s OCR.
 ```
 py -3.13 -m venv tool/.venv
 tool/.venv/Scripts/python -m pip install onnxruntime numpy pillow tokenizers onnx
-tool/.venv/Scripts/python -I tool/fetch_models.py      # fp32 export, ~215 MB, sha256-verified
-tool/.venv/Scripts/python -I tool/install_assets.py    # -> assets/models/mobileclip_s0/
-tool/.venv/Scripts/python -I tool/clip_reference.py    # fixtures for unit + integration tests
-tool/.venv/Scripts/python -I tool/calibrate_clip.py    # threshold calibration report
+tool/.venv/Scripts/python -I tool/fetch_models.py siglip_b16     # fp32 export, ~815 MB, sha256-verified
+tool/.venv/Scripts/python -I tool/quantize_siglip.py             # int8 encoders
+tool/.venv/Scripts/python -I tool/install_assets.py              # -> assets/models/siglip_b16/
+tool/.venv/Scripts/python -I tool/siglip_reference.py            # fixtures for unit + integration tests
 ```
-`tool/.venv` and `tool/.cache` are gitignored.
+Evaluation corpus and model comparison (tool/eval/): see docs/QA_REPORT.md §9.
+`tool/.venv`, `tool/.cache` and `tool/eval/.data` are gitignored.

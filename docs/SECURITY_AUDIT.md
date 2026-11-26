@@ -174,3 +174,20 @@ bundled. Fix: register them with `LicenseRegistry.addLicense` in `main()`.
   `READ_MEDIA_VISUAL_USER_SELECTED` with nothing selected. The app then lists 0 images,
   **removes every record from the index** (correct for privacy) and shows the
   limited-access banner. Revoking both permissions returns the app to onboarding.
+
+## Update for version 2.0 (2026-11-25)
+
+* **S-7 resolved.** The bundled visual model is now SigLIP B/16 under the Apache
+  License 2.0 (int8 copies; `assets/models/siglip_b16/NOTICE.txt`); the MobileCLIP-S0
+  weights are no longer shipped. **S-8 resolved:** the licence page lists SigLIP,
+  ONNX Runtime and ML Kit.
+* New on-device processing: ML Kit face detection counts faces in photos (fast mode, no
+  landmarks, classification or tracking; only the number is stored). No identity, no
+  attribute inference.
+* New stored data (schema v2): OCR line boxes, screen type, chat title and message text,
+  app label from the file name, face count. Same sensitivity as the OCR text already
+  stored; deleted by *Delete local index* (rows removed with `secure_delete`, WAL
+  truncated after re-indexing changes text).
+* The developer score breakdown is off by default, local only; "Copy report" puts it on
+  the clipboard on the user's request and contains no file names or ids.
+* The release manifest still has no INTERNET permission (checked on the 2.0 APK).

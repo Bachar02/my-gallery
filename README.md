@@ -15,9 +15,11 @@ internet permission: images, recognised text and the search index never leave th
 |---|---|
 | Gallery access | Android MediaStore via `photo_manager` (images only, Android 14 partial access supported) |
 | Text in images | Google ML Kit text recognition, bundled Latin model (offline) |
-| Visual understanding | MobileCLIP-S0 image/text encoders, ONNX Runtime |
+| Visual understanding | SigLIP B/16 image/text encoders (Google, Apache-2.0), int8, ONNX Runtime |
+| Screenshot understanding | OCR layout → screen type (chat, map, web, shop, social, settings, receipt, email, menu), chat title and messages |
+| People | Face *count* only (ML Kit face detection); no identity, no attributes |
 | Index | SQLite (FTS5 full-text search) + in-memory cosine vector index |
-| Search | Query parsing (dates, screenshot/photo, names, quoted phrases) → hybrid text + visual retrieval with calibrated thresholds and a "why this matched" explanation for every result |
+| Search | Query understanding (visual / text-in-image / conversation / hybrid, head noun, dates, people) → the right evidence for each intent, calibrated thresholds, a "why this matched" explanation for every result ([docs/SEARCH_DESIGN.md](docs/SEARCH_DESIGN.md)) |
 
 Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/AI_PIPELINE.md](docs/AI_PIPELINE.md),
 [docs/DATABASE.md](docs/DATABASE.md), product and design: [docs/PRD.md](docs/PRD.md),
@@ -34,11 +36,12 @@ Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/AI_PIPELINE.md](doc
 ```bash
 flutter pub get
 
-# 1. Generate the bundled model files (one-off, ~215 MB download -> 66 MB of assets).
+# 1. Generate the bundled model files (one-off, ~815 MB download -> 229 MB of assets).
 #    The weights are not stored in git; see "Model licence" below.
 python -m venv tool/.venv
 tool/.venv/Scripts/python -m pip install -r tool/requirements.txt   # bin/python on macOS/Linux
-tool/.venv/Scripts/python -I tool/fetch_models.py
+tool/.venv/Scripts/python -I tool/fetch_models.py siglip_b16
+tool/.venv/Scripts/python -I tool/quantize_siglip.py
 tool/.venv/Scripts/python -I tool/install_assets.py
 
 # 2. Run
@@ -97,11 +100,11 @@ distribution). See [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
 
 ## Model licence
 
-The MobileCLIP-S0 export used (`Xenova/mobileclip_s0`) ships an Apple licence that permits
-use and redistribution; Apple's current release of the same weights uses the Apple Machine
-Learning Research Model licence, which is limited to research use. Review this before any
-commercial distribution, or swap in a permissively licensed CLIP-family model with the same
-`tool/` scripts. Both licence texts are in `assets/models/mobileclip_s0/`.
+The visual model is Google's SigLIP base patch16-224 (`google/siglip-base-patch16-224`),
+released under the Apache License 2.0; the ONNX export is `Xenova/siglip-base-patch16-224`
+and the app bundles int8 copies made by `tool/quantize_siglip.py`. The licence text and a
+notice describing the modifications are in `assets/models/siglip_b16/` and on the in-app
+licence page. (Version 1 used MobileCLIP-S0, whose current weights licence is research-only.)
 
 ## Project layout
 
@@ -111,8 +114,9 @@ lib/app/             app shell, dependency wiring
 lib/core/            design system and reusable widgets
 lib/features/        onboarding, home, search, viewer, settings (UI),
                      gallery (MediaStore), indexing, search engine
-lib/ml/              OCR engine, MobileCLIP model + tokenizer
+lib/ml/              OCR engine (with layout), SigLIP model + tokenizer, face counter
 lib/data/db/         SQLite index store, FTS, vector index
 android/             manifest, permissions, R8 rules, signing
-tool/                model export/validation scripts, test-gallery generator
+tool/                model export/quantisation scripts, test-gallery generator
+tool/eval/           search evaluation corpus, model comparison, device feature extraction
 ```

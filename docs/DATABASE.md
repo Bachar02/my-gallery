@@ -1,9 +1,9 @@
 # AI Gallery: local index database
 
-Owner: Agent 4 (DB). Implementation: `lib/data/db/`. Tests: `test/data/`.
+Implementation: `lib/data/db/`. Tests: `test/data/`.
 
 The index is a **rebuildable cache** derived from the user's gallery. It
-holds OCR text, metadata, CLIP embeddings and perceptual hashes. It never
+holds OCR text and layout, screen structure, metadata, image embeddings, face counts and perceptual hashes. It never
 leaves the device. If it is lost or corrupted, the indexing service rebuilds
 it on its next run.
 
